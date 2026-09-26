@@ -1,0 +1,281 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"whis/internal/agent"
+	"whis/internal/config"
+	"whis/internal/project"
+	"whis/internal/provider"
+	"whis/internal/session"
+)
+
+// normalizePick validates a slug before binding; ollama names pass through.
+func normalizePick(a *agent.Agent, slug string, keys map[string]string) (string, error) {
+	if !provider.Exists(slug) {
+		return "", fmt.Errorf("unknown model %q — pick from the /model menu", slug)
+	}
+	prov, _, _, err := provider.Get(slug)
+	if err != nil {
+		return "", err
+	}
+	if provider.NeedsKey(prov) && keys[prov] == "" {
+		return "", fmt.Errorf("no API key for %s — /model → pick provider → add key", prov)
+	}
+	_ = a
+	return slug, nil
+}
+
+// --- spinner & clock helpers ---
+
+const statusInterval = 120 * time.Millisecond
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+var (
+	spinnerMu  sync.Mutex
+	spinnerIdx int
+	startOnce  sync.Once
+	startClock time.Time
+)
+
+func nextSpinner() string {
+	spinnerMu.Lock()
+	defer spinnerMu.Unlock()
+	f := spinnerFrames[spinnerIdx%len(spinnerFrames)]
+	spinnerIdx++
+	return f
+}
+
+func elapsedString(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// --- concrete adapter: *agent.Agent -> AgentAPI ---
+
+// Adapter binds a *agent.Agent plus keys to the AgentAPI surface.
+type Adapter struct {
+	A      *agent.Agent
+	keys   map[string]string
+	Cfg    *config.Config
+	cancel context.CancelFunc
+
+	mu sync.Mutex
+}
+
+// Keys exposes the current resolved key set (for menu readiness hints).
+func (ad *Adapter) Keys() map[string]string { return ad.keys }
+
+// NewAdapter builds the TUI adapter.
+func NewAdapter(a *agent.Agent, keys map[string]string) *Adapter {
+	return &Adapter{A: a, keys: keys}
+}
+
+// Cancel aborts any in-flight agent loop.
+func (ad *Adapter) Cancel() {
+	if ad.cancel != nil {
+		ad.cancel()
+	}
+}
+
+// Run starts a turn; it emits TUIEvents from the agent's event channel.
+func (ad *Adapter) Run(prompt string) (<-chan TUIEvent, error) {
+	startOnce.Do(func() { startClock = time.Now() })
+	ctx, cancel := context.WithCancel(context.Background())
+	ad.cancel = cancel
+	ch, err := ad.A.Run(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan TUIEvent, 64)
+	go func() {
+		defer close(out)
+		for ev := range ch {
+			te := TUIEvent{
+				Type: ev.Type, Text: ev.Text,
+				ToolName: ev.ToolName, ToolArgs: ev.ToolArgs,
+				ToolOutput: ev.ToolOutput, ToolOK: ev.ToolOK,
+				Cost: ev.Cost, DurationMS: ev.DurationMS,
+			}
+			if ev.Usage != nil {
+				te.In, te.Cached, te.Out = ev.Usage.In, ev.Usage.Cached, ev.Usage.Out
+			}
+			out <- te
+		}
+	}()
+	return out, nil
+}
+
+// HandleSlash executes slash commands, returning a UI message.
+// /task runs synchronously and may take a while; the TUI shows the last
+// spinner frame until it returns.
+func (ad *Adapter) HandleSlash(cmd string) (string, error) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	switch fields[0] {
+	case "/model":
+		if len(fields) < 2 {
+			return "usage: /model <slug> — or just type / and pick from the menu", nil
+		}
+		return ad.PickModel(fields[1])
+	case "/task":
+		desc := strings.TrimSpace(strings.TrimPrefix(cmd, "/task"))
+		if desc == "" {
+			return "usage: /task \"run the test suite and fix linter errors\"", nil
+		}
+		if !ad.A.Bound() {
+			return "", fmt.Errorf("no model selected — /model first")
+		}
+		final, err := agent.Task(ad.A, context.Background(), desc)
+		if err != nil {
+			return "", err
+		}
+		return "task result (isolated bubble):\n" + final, nil
+	case "/resume":
+		if len(fields) < 2 {
+			return "usage: /resume <session-id>", nil
+		}
+		s, err := session.Load(fields[1])
+		if err != nil {
+			return "", err
+		}
+		ad.A.Sess = s
+		return "resumed " + s.ID + " (" + fmt.Sprint(len(s.Messages)) + " messages)", nil
+	case "/undo":
+		return agent.Undo(ad.A), nil
+	case "/init":
+		md, err := project.GenerateWHISMD(ad.A.Root)
+		if err != nil {
+			return "", err
+		}
+		return "wrote WHIS.md (" + fmt.Sprint(len(md)) + " bytes)", nil
+	case "/sessions":
+		return strings.Join(session.List(), "\n"), nil
+	case "/help":
+		return `commands:
+  /model <slug>   hot-swap model — or just press / and pick from the menu
+  /task <desc>    run an isolated subagent task
+  /undo           roll back to the last pre-edit snapshot
+  /init           (re)generate WHIS.md project guide
+  /sessions       list saved sessions
+  /help           this help
+keys:
+  Ctrl+P  toggle plan pane   Ctrl+C/D quit   y/n approve diffs`, nil
+	}
+	return "", fmt.Errorf("unknown command %s (try /help)", fields[0])
+}
+
+// Status reports live header/bar data.
+func (ad *Adapter) Status() Status {
+	in, cached, out, cost := ad.A.Sess.Totals()
+	st := Status{
+		Model:  ad.A.Slug,
+		Branch: gitBranch(ad.A.Root),
+		In:     in, Cached: cached, Out: out,
+		Cost:    cost,
+		CtxUsed: contextUsed(ad.A.Sess),
+	}
+	if ad.A.Prov != nil {
+		st.Provider = ad.A.Prov.Name()
+		st.CtxLimit = contextLimit(ad.A.Wire)
+	}
+	return st
+}                                     // Workspace returns the current project root.
+func (ad *Adapter) Workspace() string { return ad.A.Root }
+
+// Ready reports whether a model is bound and prompts can run.
+func (ad *Adapter) Ready() bool { return ad.A.Bound() }
+
+// PickModel binds a model via the shared agent picker logic.
+func (ad *Adapter) PickModel(slug string) (string, error) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	slug2, err := normalizePick(ad.A, slug, ad.keys)
+	if err != nil {
+		return "", err
+	}
+	if err := ad.A.SwapModel(slug2, ad.keys); err != nil {
+		return "", err
+	}
+	ad.Cfg.Model = slug2
+	_ = ad.Cfg.Save()
+	return "model → " + slug2 + " (state retained)", nil
+}
+
+// SaveKey stores a provider key into config and the live key set.
+func (ad *Adapter) SaveKey(prov, key string) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	switch prov {
+	case "deepseek":
+		ad.Cfg.Keys.DeepSeek = key
+	case "anthropic":
+		ad.Cfg.Keys.Anthropic = key
+	case "openai":
+		ad.Cfg.Keys.OpenAI = key
+	case "openrouter":
+		ad.Cfg.Keys.OpenRouter = key
+	case "ollama-cloud":
+		ad.Cfg.Keys.OllamaCloud = key
+	}
+	_ = ad.Cfg.Save()
+	// refresh the live map
+	refresh := provider.KeysMap(ad.Cfg.Keys.Anthropic, ad.Cfg.Keys.OpenAI,
+		ad.Cfg.Keys.DeepSeek, ad.Cfg.Keys.OpenRouter, ad.Cfg.Keys.OllamaCloud)
+	for k, v := range refresh {
+		ad.keys[k] = v
+	}
+}
+
+// contextUsed estimates tokens currently in the conversation.
+func contextUsed(s *session.Session) int {
+	total := 0
+	for _, m := range s.Messages {
+		total += len(m.Content)
+	}
+	return total / 4
+}
+
+// contextLimit maps a wire model to its approximate context window.
+func contextLimit(wire string) int {
+	switch {
+	case strings.Contains(wire, "deepseek"):
+		return 128 * 1024
+	case strings.Contains(wire, "claude"):
+		return 200 * 1024
+	case strings.Contains(wire, "gpt"):
+		return 128 * 1024
+	default:
+		return 32 * 1024 // local models, conservative
+	}
+}
+
+func gitBranch(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, ".git", "HEAD"))
+	if err != nil {
+		return "—"
+	}
+	h := strings.TrimSpace(string(b))
+	if strings.HasPrefix(h, "ref: refs/heads/") {
+		return strings.TrimPrefix(h, "ref: refs/heads/")
+	}
+	return "detached"
+}

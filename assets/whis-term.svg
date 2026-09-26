@@ -1,0 +1,25 @@
+<svg width="640" height="236" viewBox="0 0 640 236" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="whis terminal session">
+  <defs>
+    <linearGradient id="thdr" x1="0" y1="0" x2="640" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="638" height="234" rx="12" fill="#0B0F19" stroke="#7C3AED" stroke-width="1.5"/>
+  <rect x="1" y="1" width="638" height="34" rx="12" fill="url(#thdr)" opacity="0.25"/>
+  <line x1="1" y1="35" x2="639" y2="35" stroke="#7C3AED" stroke-opacity="0.6"/>
+
+  <!-- generic header: no model name -->
+  <text x="18" y="24" font-family="Menlo,Consolas,monospace" font-size="13" fill="#E5E7EB">WHIS</text>
+  <text x="500" y="24" font-family="Menlo,Consolas,monospace" font-size="13" fill="#A5B4FC">main · 4m12s</text>
+
+  <text x="18" y="66"  font-family="Menlo,Consolas,monospace" font-size="13"><tspan fill="#22D3EE">&#8250;</tspan><tspan fill="#34D399" xml:space="preserve"> fix the flaky test in pkg/auth</tspan></text>
+  <text x="18" y="92"  font-family="Menlo,Consolas,monospace" font-size="13" fill="#9CA3AF">plan · locate flaky assertion &#8594; patch &#8594; run tests</text>
+  <text x="18" y="118" font-family="Menlo,Consolas,monospace" font-size="13" fill="#22D3EE">&#9881; locate_symbol auth_test.go assertExpiry</text>
+  <text x="18" y="144" font-family="Menlo,Consolas,monospace" font-size="13"><tspan fill="#F87171">- if now.After(exp) { t.Skip() }</tspan></text>
+  <text x="18" y="170" font-family="Menlo,Consolas,monospace" font-size="13"><tspan fill="#34D399">+ if now.After(exp) { t.Fatalf("expired") }</tspan></text>
+  <text x="18" y="196" font-family="Menlo,Consolas,monospace" font-size="13" fill="#34D399">&#10003; go test ./pkg/auth &#8212; 3.2s, 12 passed</text>
+
+  <rect x="1" y="206" width="638" height="23" fill="#111827"/>
+  <text x="18" y="222" font-family="Menlo,Consolas,monospace" font-size="12" fill="#9CA3AF">tokens 12,431/1,204 &#183; cache 84% &#183; $0.0031 &#183; ctx [&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608; 21%]</text>
+</svg>

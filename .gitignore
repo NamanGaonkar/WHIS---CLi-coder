@@ -1,0 +1,16 @@
+# build artifacts
+whis
+whis.exe
+dist/
+*.sha256
+
+# go
+*.test
+*.out
+
+# editors
+.vscode/
+.idea/
+
+# scratch
+blah.txt

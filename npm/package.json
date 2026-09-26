@@ -1,0 +1,36 @@
+{
+  "name": "whis-cli",
+  "version": "0.1.0",
+  "description": "WHIS — hyper-lean, token-surgical AI coding CLI with an overkill cybernetic TUI. BYO key: DeepSeek, Anthropic, OpenAI, OpenRouter, Ollama.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whis-cli/whis.git"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-assistant",
+    "agent",
+    "terminal",
+    "tui",
+    "ollama",
+    "deepseek",
+    "anthropic",
+    "openai",
+    "golang"
+  ],
+  "bin": {
+    "whis": "./bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node ./bin/install.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "preferGlobal": true
+}
