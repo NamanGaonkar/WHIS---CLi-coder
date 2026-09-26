@@ -19,4 +19,7 @@ var (
 	splashTagStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E879F9"))
 	splashHintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
 	splashReadyStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#34D399"))
+
+	workingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#22D3EE")).Italic(true)
+	codeHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF")).Background(lipgloss.Color("#1F2937")).Padding(0, 1)
 )

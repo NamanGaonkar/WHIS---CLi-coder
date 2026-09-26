@@ -15,13 +15,17 @@ type fakeAPI struct {
 func (f *fakeAPI) Run(prompt string) (<-chan TUIEvent, error) { return f.evs, nil }
 func (f *fakeAPI) HandleSlash(cmd string) (string, error)     { return "ok", nil }
 func (f *fakeAPI) Status() Status {
-	return Status{Model: "test-model", Provider: "test", Branch: "main"}
+	return Status{Model: "test-model", Provider: "test", Mode: "ask", Branch: "main"}
 }
+
 func (f *fakeAPI) Keys() map[string]string               { return map[string]string{} }
 func (f *fakeAPI) Workspace() string                     { return "/tmp" }
 func (f *fakeAPI) Ready() bool                           { return true }
 func (f *fakeAPI) PickModel(slug string) (string, error) { return "model → " + slug, nil }
 func (f *fakeAPI) SaveKey(prov, key string)              {}
+func (f *fakeAPI) ResumedTranscript() []TUILine          { return nil }
+func (f *fakeAPI) ResumeInfo() string                    { return "" }
+func (f *fakeAPI) SetMode(mode string) error             { return nil }
 
 func newTestModel(t *testing.T) model {
 	t.Helper()

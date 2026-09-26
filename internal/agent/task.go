@@ -19,7 +19,7 @@ func Task(parent *Agent, ctx context.Context, description string) (string, error
 		Sess:    session.New(parent.Slug + "-task"),
 		Tools:   tool.NewEnv(parent.Root),
 		System:  parent.System + "\n\nMODE: subagent. You are running an isolated task. Work autonomously; your final message is the ONLY thing the parent session sees. Summarize outcome, files touched, and verification results tersely.",
-		MaxTurn: 10,
+		MaxTurn: 25,
 	}
 	sub.Tools.AutoApprove = parent.AutoApprove
 	sub.Tools.OnSnapshot = parent.snapshot // share undo trail

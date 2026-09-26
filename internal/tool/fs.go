@@ -52,7 +52,7 @@ func (e *Env) ApplyPatch(path, search, replace string) Result {
 		if fileExists(abs) {
 			return Result{Output: "file exists; empty search would replace everything"}
 		}
-		if !e.approve("create file: " + path) {
+		if !e.approve(riskSafe, "create file: "+path) {
 			return Result{Output: "user declined file creation."}
 		}
 		if e.OnSnapshot != nil {
@@ -81,7 +81,7 @@ func (e *Env) ApplyPatch(path, search, replace string) Result {
 			return Result{Output: "search block not found in " + path + " (even fuzzily); re-run read_range and retry with exact text"}
 		}
 	}
-	if !e.approve("edit file: " + path + " (" + mode + " match, " + fmt.Sprint(strings.Count(search, "\n")+1) + " lines)") {
+	if !e.approve(riskSafe, "edit file: "+path+" ("+mode+" match, "+fmt.Sprint(strings.Count(search, "\n")+1)+" lines)") {
 		return Result{Output: "user declined file edit."}
 	}
 	if e.OnSnapshot != nil {

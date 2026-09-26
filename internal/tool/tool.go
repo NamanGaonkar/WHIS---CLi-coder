@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -28,14 +29,35 @@ type Result struct {
 type Env struct {
 	Root        string
 	AutoApprove bool
-	// AskApproval is called before shell commands and file writes when not
-	// auto-approving. Return true to proceed.
+	// RiskBased: only SENSITIVE actions prompt (destructive commands etc.);
+	// routine file edits/creates and safe commands run without asking.
+	RiskBased bool
+	// AskApproval is called before sensitive actions. Return true to proceed.
 	AskApproval func(action string) bool
 	// OnSnapshot is called before each mutation (used by /undo).
 	OnSnapshot func() error
 	index      *Index
 	indexBuilt bool
 }
+
+// Action risk classes.
+const (
+	riskSafe      = "safe"      // file edits/creates in workspace, build/run commands
+	riskSensitive = "sensitive" // destructive or system-touching commands
+)
+
+// dangerRe matches commands that can destroy data, escalate privileges, or
+// execute remote code. These always prompt, even in auto mode.
+var dangerRe = regexp.MustCompile(`(?i)(\brm\s+(-[a-z]*r|-[a-z]*f)` +
+	`|\brdel\b|\bdel\s+/[sq]|\brd\s+/s|\brmdir\b` +
+	`|\bformat\s|\bmkfs\b|\bdiskpart\b|\bdd\s+if=` +
+	`|\bsudo\b|\bdoas\b|\brunas\b` +
+	`|\bgit\s+(push|reset\s+--hard|clean\s+-[fd])` +
+	`|\b(curl|wget)\b[^|;]*\|\s*(sh|bash|zsh|powershell)` +
+	`|\breg\s+(delete|add)\b|\bregedit\b` +
+	`|\bshutdown\b|\breboot\b|\btaskkill\b|\bkill\s+-9` +
+	`|\bchmod\s+777\b|\bchown\s+-R\b` +
+	`|\bdrop\s+(table|database)\b)`)
 
 // NewEnv builds a tool Env rooted at dir.
 func NewEnv(root string) *Env {
@@ -149,11 +171,17 @@ func (e *Env) rel(abs string) string {
 }
 
 // RunCommand executes a sandboxed shell command with approval + output cap.
+// Risk: destructive commands prompt even in auto mode; normal build/run/test
+// commands execute immediately.
 func (e *Env) RunCommand(command string) Result {
 	if strings.TrimSpace(command) == "" {
 		return Result{Output: "empty command"}
 	}
-	if !e.approve("run command: " + command) {
+	risk := riskSafe
+	if dangerRe.MatchString(command) {
+		risk = riskSensitive
+	}
+	if !e.approve(risk, "run command: "+command) {
 		return Result{Output: "user declined command execution."}
 	}
 	if e.OnSnapshot != nil {
@@ -182,8 +210,13 @@ func capLines(s string, max int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (e *Env) approve(action string) bool {
+// approve gates an action. AutoApprove (-y) allows everything; RiskBased
+// mode auto-allows safe actions and prompts only for sensitive ones.
+func (e *Env) approve(risk, action string) bool {
 	if e.AutoApprove {
+		return true
+	}
+	if e.RiskBased && risk == riskSafe {
 		return true
 	}
 	if e.AskApproval == nil {

@@ -158,7 +158,7 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
 			return "", err
 		}
 		ad.A.Sess = s
-		return "resumed " + s.ID + " (" + fmt.Sprint(len(s.Messages)) + " messages)", nil
+		return "", nil
 	case "/undo":
 		return agent.Undo(ad.A), nil
 	case "/init":
@@ -183,11 +183,59 @@ keys:
 	return "", fmt.Errorf("unknown command %s (try /help)", fields[0])
 }
 
+// ResumedTranscript returns the restored conversation as TUI transcript
+// lines so a resumed session visibly shows its full history.
+func (ad *Adapter) ResumedTranscript() []TUILine {
+	var out []TUILine
+	if ad.A == nil || ad.A.Sess == nil {
+		return out
+	}
+	for _, m := range ad.A.Sess.Messages {
+		switch m.Role {
+		case "user":
+			out = append(out, TUILine{Kind: "user", Body: m.Content})
+		case "assistant":
+			if m.Reasoning != "" {
+				out = append(out, TUILine{Kind: "plan", Body: m.Reasoning})
+			}
+			if m.Content != "" {
+				out = append(out, TUILine{Kind: "md", Body: m.Content})
+			}
+		case "tool":
+			body := m.Content
+			if len(body) > 400 {
+				body = body[:400] + "\n… (truncated)"
+			}
+			out = append(out, TUILine{Kind: "toolout", Body: body})
+		}
+	}
+	return out
+}
+
+// ResumeInfo returns a one-line summary of the active session.
+func (ad *Adapter) ResumeInfo() string {
+	if ad.A == nil || ad.A.Sess == nil {
+		return ""
+	}
+	s := ad.A.Sess
+	model := s.Model
+	if model == "" {
+		model = "model not set"
+	}
+	return fmt.Sprintf("resumed %s · %d messages · %s", s.ID, len(s.Messages), model)
+} // SetMode switches the agent work mode (plan | ask | auto).
+func (ad *Adapter) SetMode(mode string) error {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	return ad.A.SetMode(mode)
+}
+
 // Status reports live header/bar data.
 func (ad *Adapter) Status() Status {
 	in, cached, out, cost := ad.A.Sess.Totals()
 	st := Status{
 		Model:  ad.A.Slug,
+		Mode:   ad.A.Mode,
 		Branch: gitBranch(ad.A.Root),
 		In:     in, Cached: cached, Out: out,
 		Cost:    cost,

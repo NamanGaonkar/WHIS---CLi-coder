@@ -36,6 +36,7 @@ type Event struct {
 type Agent struct {
 	Root        string
 	AutoApprove bool
+	Mode        string // "plan" | "ask" | "auto"
 
 	Slug    string // e.g. "deepseek-flash"
 	Wire    string
@@ -48,6 +49,27 @@ type Agent struct {
 
 	// askApproval is re-armed each turn by the loop; it blocks on the TUI.
 	askApproval func(string) bool
+}
+
+// Work modes.
+const (
+	ModePlan = "plan" // read-only: map the codebase, produce a plan
+	ModeAsk  = "ask"  // act freely; approve only sensitive/destructive actions
+	ModeAuto = "auto" // full autonomy: nothing prompts (still blocks dangerous)
+)
+
+// Modes returns the selectable work modes with UI descriptions.
+func Modes() [](struct{ Name, Desc string }) {
+	return [](struct{ Name, Desc string }){
+		{ModePlan, "read-only · analyze & plan, no writes, no commands"},
+		{ModeAsk, "agent acts freely · popup only for destructive stuff"},
+		{ModeAuto, "no popups at all · even destructive commands run"},
+	}
+}
+
+// ValidMode reports whether m is a known mode.
+func ValidMode(m string) bool {
+	return m == ModePlan || m == ModeAsk || m == ModeAuto
 } // New wires up an Agent for a workspace with an immediately bound model.
 func New(root, slug string, keys map[string]string, auto bool) (*Agent, error) {
 	a := NewUnbound(root, auto)
@@ -61,11 +83,12 @@ func New(root, slug string, keys map[string]string, auto bool) (*Agent, error) {
 // model is bound lazily via SwapModel (boot never errors on model issues).
 func NewUnbound(root string, auto bool) *Agent {
 	a := &Agent{
-		Root: root, AutoApprove: auto,
+		Root: root, AutoApprove: auto, Mode: ModeAsk,
 		Sess:    session.NewForRoot("", root),
 		Tools:   tool.NewEnv(root),
-		MaxTurn: 12,
+		MaxTurn: 40,
 	}
+	a.Tools.RiskBased = !auto
 	a.Tools.AutoApprove = auto
 	a.installApprovals()
 	a.Tools.OnSnapshot = a.snapshot
@@ -108,10 +131,61 @@ func (a *Agent) rebuildSystem() {
 		names = append(names, d.Name)
 	}
 	a.System = project.SystemPrompt(a.Root, names)
+	a.System += "\n\n" + a.modeDirective()
 	// WHIS.md project guide rides the static system block (cache-friendly).
 	if b, err := os.ReadFile(filepath.Join(a.Root, "WHIS.md")); err == nil && len(b) > 0 {
 		a.System += "\n\n--- WHIS.md (project guide) ---\n" + string(b)
 	}
+}
+
+// modeDirective injects the active work mode into the system prompt.
+func (a *Agent) modeDirective() string {
+	switch a.Mode {
+	case ModePlan:
+		return "MODE: PLAN. Read-only research phase. Only read/search/list tools are " +
+			"available. Explore the codebase, then present a concrete step-by-step " +
+			"implementation plan (files to touch, edits, commands to verify). Do not " +
+			"attempt writes; they are disabled and will be denied."
+	case ModeAuto:
+		return "MODE: AUTO. The user pre-approved ALL file writes and shell commands. " +
+			"Act fully autonomously: create/modify files with apply_patch, run build " +
+			"and test commands via run_command, and iterate until it works. No " +
+			"approval prompts will appear."
+	default:
+		return "MODE: ASK. You may write files and run commands freely WITHOUT " +
+			"asking permission for normal work: creating files, editing code, " +
+			"running builds/tests. Only destructive actions (rm -rf, git push, " +
+			"system changes) trigger a user prompt. Do not ask, just do the work."
+	}
+}
+
+// SetMode switches the work mode and re-derives approvals + prompt.
+func (a *Agent) SetMode(mode string) error {
+	if !ValidMode(mode) {
+		return fmt.Errorf("unknown mode %q (plan | ask | auto)", mode)
+	}
+	a.Mode = mode
+	a.AutoApprove = mode == ModeAuto
+	a.Tools.AutoApprove = a.AutoApprove
+	a.Tools.RiskBased = mode == ModeAsk // ask = act freely, prompt only risky
+	a.rebuildSystem()
+	return nil
+}
+
+// allowedTools filters the manifest for the active mode (plan = read-only).
+func (a *Agent) allowedTools() []provider.Tool {
+	readOnly := map[string]bool{
+		"locate_symbol": true, "read_range": true,
+		"search_codebase": true, "list_tree": true,
+	}
+	var out []provider.Tool
+	for _, d := range tool.Manifest() {
+		if a.Mode == ModePlan && !readOnly[d.Name] {
+			continue
+		}
+		out = append(out, provider.Tool{Name: d.Name, Description: d.Description, Schema: d.Schema})
+	}
+	return out
 }
 
 // snapshot writes a shadow snapshot before mutations (/undo source).
@@ -142,7 +216,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 
 	for turn := 0; turn < a.MaxTurn; turn++ {
 		msgs := a.buildMessages()
-		stream, err := a.Prov.Stream(ctx, a.Wire, msgs, apiTools())
+		stream, err := a.Prov.Stream(ctx, a.Wire, msgs, a.allowedTools())
 		if err != nil {
 			emit(out, Event{Type: "error", Text: err.Error()})
 			return
@@ -198,12 +272,22 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 
 		// execute tools; approval modal rides the stream for this turn
 		a.askApproval = func(action string) bool {
+			if a.AutoApprove {
+				return true
+			}
 			ch := make(chan bool, 1)
 			out <- Event{Type: "approval", Text: action, Approve: func(ok bool) { ch <- ok }}
 			return <-ch
 		}
 		for _, c := range calls {
 			emit(out, Event{Type: "tool_start", ToolName: c.Name, ToolArgs: string(c.Args)})
+			// plan mode hard-deny for mutating tools (model may still attempt)
+			if a.Mode == ModePlan && (c.Name == "apply_patch" || c.Name == "run_command") {
+				emit(out, Event{Type: "tool_end", ToolName: c.Name,
+					ToolOutput: "denied: plan mode is read-only — switch to ask/auto mode to act", ToolOK: false})
+				a.Sess.Append(session.Msg{Role: "tool", Content: "denied: plan mode is read-only", ToolCallID: c.ID})
+				continue
+			}
 			res := a.Tools.Execute(c.Name, c.Args)
 			emit(out, Event{Type: "tool_end", ToolName: c.Name, ToolOutput: res.Output, ToolOK: res.OK})
 			a.Sess.Append(session.Msg{Role: "tool", Content: res.Output, ToolCallID: c.ID})
@@ -212,7 +296,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 			emit(out, Event{Type: "notice", Text: fmt.Sprintf("compaction: squashed %d tool logs into diagnostic vectors", n)})
 		}
 	}
-	emit(out, Event{Type: "error", Text: "turn limit reached without final answer"})
+	emit(out, Event{Type: "error", Text: "stopped: agent used all 40 tool turns without a final answer — try breaking the task into smaller steps (/task helps too)"})
 }
 
 // buildMessages converts the session into provider messages.

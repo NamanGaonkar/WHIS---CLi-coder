@@ -86,14 +86,23 @@ type model struct {
 	status          Status
 	quitting        bool
 	over            overlay
-	customBuf       bool   // collecting a custom openrouter model id
-	pendingProvider string // provider for the custom id / key being entered
+	customBuf       bool         // collecting a custom openrouter model id
+	pendingProvider string       // provider for the custom id / key being entered
+	codeOpen        map[int]bool // expanded code blocks per md line index
+	mdSeq           int          // monotonic id for md lines
 }
 
 // line is one transcript entry.
 type line struct {
 	kind string // "user" | "md" | "plan" | "tool" | "toolout" | "error" | "info"
 	body string
+	n    int // index for codeOpen maps (md lines)
+}
+
+// TUILine is a transcript line produced outside the streaming loop.
+type TUILine struct {
+	Kind string
+	Body string
 }
 
 // AgentAPI decouples the TUI from the agent package.
@@ -106,6 +115,9 @@ type AgentAPI interface {
 	Ready() bool
 	PickModel(slug string) (string, error)
 	SaveKey(provider, key string)
+	ResumedTranscript() []TUILine
+	ResumeInfo() string
+	SetMode(mode string) error
 }
 
 // TUIEvent bridges agent events into the TUI.
@@ -120,12 +132,11 @@ type TUIEvent struct {
 	In, Cached, Out int
 	Cost            float64
 	DurationMS      int64
-}
-
-// Status feeds the header/status bars.
+} // Status feeds the header/status bars.
 type Status struct {
 	Model           string
 	Provider        string
+	Mode            string // plan | ask | auto
 	Branch          string
 	In, Cached, Out int
 	Cost            float64
@@ -213,6 +224,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "ctrl+p":
 				m.planOpen = !m.planOpen
+				return m, nil
+			case "c":
+				m.toggleCode(true)
+				return m, nil
+			case "t":
+				m.toggleCode(false)
 				return m, nil
 			case "enter":
 				v := strings.TrimSpace(m.input.Value())
@@ -378,6 +395,9 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		case "/sessions":
 			m.over.openSessions(m.agent.Workspace())
 			return m, nil
+		case "/mode":
+			m.over.openModeMenu(m.agent.Status().Mode)
+			return m, nil
 		}
 		resp, err := m.agent.HandleSlash(cmd)
 		if err != nil {
@@ -433,6 +453,15 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case overlayWorkMode:
+		m.over = overlay{}
+		if err := m.agent.SetMode(it.value); err != nil {
+			m.lines = append(m.lines, line{kind: "error", body: err.Error()})
+		} else {
+			m.lines = append(m.lines, line{kind: "info", body: "mode → " + it.value})
+		}
+		return m, nil
+
 	case overlaySessions:
 		if it.value == "" || it.disabled {
 			m.over = overlay{}
@@ -440,10 +469,19 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		}
 		id := it.value
 		m.over = overlay{}
-		resp, err := m.agent.HandleSlash("/resume " + id)
-		if err != nil {
+		if _, err := m.agent.HandleSlash("/resume " + id); err != nil {
 			m.lines = append(m.lines, line{kind: "error", body: err.Error()})
-		} else if resp != "" {
+			return m, nil
+		}
+		// replay the restored conversation into the transcript
+		m.lines = nil
+		m.streamBuf = ""
+		m.planBuf = ""
+		m.splash = false
+		for _, tl := range m.agent.ResumedTranscript() {
+			m.lines = append(m.lines, line{kind: tl.Kind, body: tl.Body})
+		}
+		if resp := m.agent.ResumeInfo(); resp != "" {
 			m.lines = append(m.lines, line{kind: "info", body: resp})
 		}
 		return m, nil
@@ -528,7 +566,8 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 // flushStream commits buffered prose / plan as transcript lines.
 func (m *model) flushStream() {
 	if m.streamBuf != "" {
-		m.lines = append(m.lines, line{kind: "md", body: m.streamBuf})
+		m.mdSeq++
+		m.lines = append(m.lines, line{kind: "md", body: m.streamBuf, n: m.mdSeq})
 		m.streamBuf = ""
 	}
 	if m.planBuf != "" {
@@ -593,14 +632,16 @@ func (m model) safeView() (s string) {
 }
 
 // menuBlock renders the active overlay as a full-width panel (plus the key
-// input inside it when entering a key), so panels always span the screen.
+// input inside it when entering a key). Width accounts for the border and
+// padding so the right edge always closes cleanly at the terminal edge.
 func (m model) menuBlock() string {
 	body := m.over.view(m.width)
 	if m.over.mode == overlayKeyInput {
 		body += "\n\n" + m.input.View()
 	}
-	style := menuPanelStyle.Width(m.width)
-	return style.Render(body)
+	// border 2 cols + padding 4 cols = 6; inner width keeps total == m.width
+	inner := clampInt(m.width-6, 20, m.width)
+	return menuPanelStyle.Width(inner).Render(body)
 }
 
 // splashView is the centered Claude-Code-style startup screen. The logo
@@ -632,7 +673,8 @@ func (m model) splashView() string {
 	content := lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", tag, ver, "", modelLine, hints)
 	bodyH := clampInt(m.height-3, 3, m.height)
 	body := lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, content)
-	inp := inputStyle.Width(m.width - 2).Render(m.input.View())
+	// border 2 cols = 2; inner width keeps total == m.width
+	inp := inputStyle.Width(clampInt(m.width-2, 20, m.width)).Render(m.input.View())
 	return body + "\n" + inp + "\n" + m.statusBar()
 }
 
@@ -646,17 +688,20 @@ func (m model) sessionView() string {
 	if m.status.Spinning {
 		spin = " " + m.status.Spinner
 	}
-	right := fmt.Sprintf("%s%s %s ", m.status.Branch, spin, m.status.Elapsed)
+	mode := m.agent.Status().Mode
+	right := fmt.Sprintf("%s · %s%s %s ", strings.ToUpper(mode), m.status.Branch, spin, m.status.Elapsed)
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
 	b.WriteString(headerStyle.Render(left) + strings.Repeat(" ", gap) + headerStyle.Render(right) + "\n")
 
-	// transcript viewport
+	// transcript viewport: auto-scroll to the newest output on every render
+	// so long agent runs never look "stuck" on old content.
 	m.vp.Width = m.width
 	m.vp.Height = clampInt(m.height-7, 3, m.height)
 	m.vp.SetContent(m.renderTranscript())
+	m.vp.GotoBottom()
 	b.WriteString(m.vp.View() + "\n")
 
 	// approval modal
@@ -670,10 +715,8 @@ func (m model) sessionView() string {
 	if m.over.mode != overlayNone {
 		b.WriteString(m.menuBlock() + "\n")
 		return b.String() + m.statusBar()
-	}
-
-	// full-width input box
-	b.WriteString(inputStyle.Width(m.width-2).Render(m.input.View()) + "\n")
+	} // full-width input box (border included in the width math)
+	b.WriteString(inputStyle.Width(clampInt(m.width-2, 20, m.width)).Render(m.input.View()) + "\n")
 
 	// telemetry status bar
 	b.WriteString(m.statusBar())
@@ -690,10 +733,11 @@ func (m model) statusBar() string {
 	}
 	bar := fmt.Sprintf(" tokens %s/%s · cache %d%% · $%.4f · ctx %s",
 		commify(in), commify(out), hitPct, cost, ctxGauge(st.CtxUsed, st.CtxLimit))
-	return barStyle.Width(m.width).MaxWidth(m.width).Render(bar)
+	return barStyle.Width(m.width - 1).MaxWidth(m.width - 1).Render(bar)
 }
 
-// renderTranscript renders all transcript lines with styling.
+// renderTranscript renders all transcript lines with styling. Assistant md
+// lines render with code blocks collapsed (c expands the targeted block).
 func (m model) renderTranscript() string {
 	var parts []string
 	for _, l := range m.lines {
@@ -701,7 +745,7 @@ func (m model) renderTranscript() string {
 		case "user":
 			parts = append(parts, badgeStyle.Render("you")+okStyle.Render(" "+l.body))
 		case "md":
-			parts = append(parts, renderMD(l.body, m.width))
+			parts = append(parts, renderCollapsible(l.body, m.width, m.codeOpenFor(l.n)))
 		case "plan":
 			parts = append(parts, planStyle.Render(truncateLines(l.body, m.width-4, 8)))
 		case "tool":
@@ -715,12 +759,60 @@ func (m model) renderTranscript() string {
 		}
 	}
 	if m.streamBuf != "" {
-		parts = append(parts, renderMD(m.streamBuf, m.width))
+		if m.status.Spinning {
+			// while working: show a live line count, not the dumping text
+			lines := strings.Count(strings.TrimSpace(m.streamBuf), "\n") + 1
+			parts = append(parts, workingStyle.Render(fmt.Sprintf("… composing reply (%d lines so far)", lines)))
+		} else {
+			parts = append(parts, renderCollapsible(m.streamBuf, m.width, m.codeOpenFor(-1)))
+		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// codeOpenFor returns the expansion map for an md line (-1 = streaming buf).
+func (m model) codeOpenFor(n int) map[int]bool {
+	out := map[int]bool{}
+	for k, v := range m.codeOpen {
+		if k/1000 == n+1 { // high bits encode the line, low bits the segment
+			out[k%1000] = v
+		}
+	}
+	return out
+}
+
+// toggleCode flips expansion of the code segment nearest the last output.
+func (m *model) toggleCode(open bool) {
+	if m.codeOpen == nil {
+		m.codeOpen = map[int]bool{}
+	}
+	// find the last md line
+	target := -1
+	for i := len(m.lines) - 1; i >= 0; i-- {
+		if m.lines[i].kind == "md" {
+			target = m.lines[i].n
+			break
+		}
+	}
+	if target < 0 {
+		return
+	}
+	segs := splitFences(m.lines[len(m.lines)-1].body)
+	codeCount := 0
+	for _, s := range segs {
+		if s.code {
+			codeCount++
+		}
+	}
+	if codeCount == 0 {
+		return
+	}
+	for i := 0; i < codeCount; i++ {
+		m.codeOpen[(target+1)*1000+i] = open
+	}
 }
 
 // diffStyle colorizes +/- lines in tool output (diffs, logs).

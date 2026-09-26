@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"whis/internal/agent"
 	"whis/internal/config"
 	"whis/internal/provider"
 	"whis/internal/session"
@@ -19,6 +20,7 @@ const (
 	overlayModel                 // provider chosen → pick model
 	overlayKeyInput              // provider needs a key → masked input
 	overlaySessions              // /sessions → pick session to resume
+	overlayWorkMode              // /mode → pick work mode (plan/ask/auto)
 )
 
 // menuItem is one selectable row in an overlay.
@@ -45,6 +47,7 @@ func (o *overlay) openSlashMenu() {
 	o.title = "COMMANDS"
 	o.cursor = 0
 	o.items = []menuItem{
+		{label: "mode", hint: "plan · ask · auto (how the agent acts)", value: "/mode"},
 		{label: "model", hint: "switch provider or model", value: "/model"},
 		{label: "provider", hint: "manage API keys & providers", value: "/provider"},
 		{label: "sessions", hint: "resume a session from this folder", value: "/sessions"},
@@ -52,6 +55,28 @@ func (o *overlay) openSlashMenu() {
 		{label: "undo", hint: "roll back last change", value: "/undo"},
 		{label: "init", hint: "(re)generate WHIS.md", value: "/init"},
 		{label: "help", hint: "all commands & keys", value: "/help"},
+	}
+}
+
+// openModeMenu lists work modes; current gets an IN USE marker.
+func (o *overlay) openModeMenu(current string) {
+	o.mode = overlayWorkMode
+	o.title = "SELECT MODE"
+	o.cursor = 0
+	o.items = nil
+	for _, m := range agent.Modes() {
+		hint := m.Desc
+		selected := false
+		if m.Name == current {
+			hint = "IN USE · " + m.Desc
+			selected = true
+		}
+		o.items = append(o.items, menuItem{label: m.Name, hint: hint, value: m.Name, selected: selected})
+	}
+	for i, it := range o.items {
+		if it.selected {
+			o.cursor = i
+		}
 	}
 }
 
