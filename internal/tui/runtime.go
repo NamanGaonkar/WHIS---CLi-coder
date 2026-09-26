@@ -92,6 +92,13 @@ func (ad *Adapter) Cancel() {
 	}
 }
 
+// Interrupt stops the running agent loop on user request (esc).
+func (ad *Adapter) Interrupt() {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	ad.Cancel()
+}
+
 // Run starts a turn; it emits TUIEvents from the agent's event channel.
 func (ad *Adapter) Run(prompt string) (<-chan TUIEvent, error) {
 	startOnce.Do(func() { startClock = time.Now() })
@@ -109,7 +116,7 @@ func (ad *Adapter) Run(prompt string) (<-chan TUIEvent, error) {
 				Type: ev.Type, Text: ev.Text,
 				ToolName: ev.ToolName, ToolArgs: ev.ToolArgs,
 				ToolOutput: ev.ToolOutput, ToolOK: ev.ToolOK,
-				Cost: ev.Cost, DurationMS: ev.DurationMS,
+				Turn: ev.Turn, Cost: ev.Cost, DurationMS: ev.DurationMS,
 			}
 			if ev.Usage != nil {
 				te.In, te.Cached, te.Out = ev.Usage.In, ev.Usage.Cached, ev.Usage.Out

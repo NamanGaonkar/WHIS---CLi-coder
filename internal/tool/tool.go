@@ -3,6 +3,7 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // MaxReadLines blocks unforced large reads (token surgery).
@@ -18,6 +20,10 @@ const MaxReadLines = 120
 
 // MaxCommandOutput caps run_command output lines.
 const MaxCommandOutput = 40
+
+// CommandTimeout caps every shell command so the agent can never hang the
+// session on a waiting process (servers excluded via trailing '&').
+const CommandTimeout = 120 * time.Second
 
 // Result is a tool outcome returned to the model.
 type Result struct {
@@ -194,7 +200,17 @@ func (e *Env) RunCommand(command string) Result {
 		cmd = exec.Command("sh", "-c", command)
 	}
 	cmd.Dir = e.Root
+	// security: hard timeout so runaway processes cannot hang the agent
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+	cmd.Cancel = func() error { // Go 1.20+: kills the whole process tree
+		return cmd.Process.Kill()
+	}
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return Result{OK: false, Output: capLines(string(out), MaxCommandOutput) +
+			"\n[timeout] killed after " + CommandTimeout.String()}
+	}
 	res := capLines(string(out), MaxCommandOutput)
 	if err != nil {
 		res = res + "\n[exit] " + err.Error()

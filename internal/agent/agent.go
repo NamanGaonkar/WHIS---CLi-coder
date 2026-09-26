@@ -19,13 +19,14 @@ import (
 
 // Events emitted by the agent loop (consumed by the TUI or headless mode).
 type Event struct {
-	Type       string // "reasoning" | "text" | "tool_start" | "tool_end" | "approval" | "turn_done" | "error"
+	Type       string // "reasoning" | "text" | "tool_start" | "tool_end" | "approval" | "usage" | "turn_done" | "error"
 	Text       string
 	ToolName   string
 	ToolArgs   string
 	ToolOutput string
 	ToolOK     bool
 	Usage      *provider.Usage
+	Turn       int // 1-based turn number within this run
 	DurationMS int64
 	Cost       float64
 	// Approve is set on "approval" events; call with the decision.
@@ -132,13 +133,27 @@ func (a *Agent) rebuildSystem() {
 	}
 	a.System = project.SystemPrompt(a.Root, names)
 	a.System += "\n\n" + a.modeDirective()
+	a.System += "\n\n" + completionDirective()
 	// WHIS.md project guide rides the static system block (cache-friendly).
 	if b, err := os.ReadFile(filepath.Join(a.Root, "WHIS.md")); err == nil && len(b) > 0 {
 		a.System += "\n\n--- WHIS.md (project guide) ---\n" + string(b)
 	}
 }
 
-// modeDirective injects the active work mode into the system prompt.
+// completionDirective teaches the model how to finish: write files to disk
+// (never dump code in chat), verify, then emit the DONE footer.
+func completionDirective() string {
+	return `COMPLETION PROTOCOL (strict):
+1. NEVER print code in the chat. Write every file with apply_patch. The chat
+   is for short status only. If you already know the content, create the file
+   immediately; do not paste it into the reply first.
+2. After the last action, run the project's verify command via run_command
+   when one exists (build/test). Fix failures and re-verify.
+3. End EVERY final answer with exactly this footer on its own line:
+   DONE: <one-line summary of what changed>
+   Example: DONE: added calculator app (index.html, style.css, script.js), verified in browser
+4. Keep final replies under 10 lines: what you did, where, how to run it.`
+}
 func (a *Agent) modeDirective() string {
 	switch a.Mode {
 	case ModePlan:
@@ -218,9 +233,16 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 		msgs := a.buildMessages()
 		stream, err := a.Prov.Stream(ctx, a.Wire, msgs, a.allowedTools())
 		if err != nil {
+			// cancelled mid-run is not an error worth showing
+			if ctx.Err() != nil {
+				emit(out, Event{Type: "turn_done", Text: "", Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
+				return
+			}
 			emit(out, Event{Type: "error", Text: err.Error()})
 			return
 		}
+		// announce the phase so the UI can show "turn n/max"
+		emit(out, Event{Type: "notice", Text: fmt.Sprintf("thinking · turn %d/%d", turn+1, a.MaxTurn), Turn: turn + 1})
 
 		var text strings.Builder
 		var reason strings.Builder
@@ -249,6 +271,16 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 			}
 			if d.Usage != nil {
 				a.recordUsage(*d.Usage, time.Since(start))
+				// live telemetry for the status bar
+				u := *d.Usage
+				emit(out, Event{Type: "usage", Usage: &u, Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
+			}
+			if ctx.Err() != nil {
+				// user interrupted mid-stream
+				_ = stream.Close()
+				emit(out, Event{Type: "notice", Text: "interrupted"})
+				emit(out, Event{Type: "turn_done", Text: "", Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
+				return
 			}
 		}
 		_ = stream.Close()
@@ -266,7 +298,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 
 		// no tool calls => final answer
 		if len(calls) == 0 {
-			emit(out, Event{Type: "turn_done", Text: text.String(), DurationMS: time.Since(start).Milliseconds()})
+			emit(out, Event{Type: "turn_done", Text: text.String(), Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
 			return
 		}
 
@@ -312,14 +344,7 @@ func (a *Agent) buildMessages() []provider.Message {
 	return msgs
 }
 
-// apiTools converts the manifest to provider tools.
-func apiTools() []provider.Tool {
-	var out []provider.Tool
-	for _, d := range tool.Manifest() {
-		out = append(out, provider.Tool{Name: d.Name, Description: d.Description, Schema: d.Schema})
-	}
-	return out
-}
+// apiTools is unused; the loop uses a.allowedTools() for mode filtering.
 
 // maybeCompact squashes stale tool logs into 2-line diagnostic vectors once
 // the estimated context crosses 60% of the active window.

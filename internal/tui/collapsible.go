@@ -69,8 +69,9 @@ func renderCollapsible(md string, width int, open map[int]bool) string {
 	codeIdx := 0
 	for _, s := range segs {
 		if !s.code {
+			// models often paste code WITHOUT fences; catch and collapse it too
 			if strings.TrimSpace(s.text) != "" {
-				out = append(out, renderMD(s.text, width))
+				out = append(out, renderProseSmart(s.text, width, open, &codeIdx)...)
 			}
 			continue
 		}
@@ -86,6 +87,52 @@ func renderCollapsible(md string, width int, open map[int]bool) string {
 			fmt.Sprintf("[code %s · %d lines · %s · c expand]", langLabel(s.lang), len(lines), summary)))
 	}
 	return strings.Join(out, "\n\n")
+}
+
+// looksLikeCode heuristically detects a raw code line (no fence markers).
+func looksLikeCode(ln string) bool {
+	t := strings.TrimSpace(ln)
+	if t == "" {
+		return false
+	}
+	if strings.HasPrefix(t, "    ") || strings.HasPrefix(ln, "\t") {
+		return true
+	}
+	markers := []string{"{", "}", ";", "</", "<div", "<html", "<head", "<body", "<script", "<style",
+		"function ", "const ", "let ", "var ", "def ", "class ", "import ", "return", "=>", "<!DOCTYPE", "<!doctype"}
+	for _, m := range markers {
+		if strings.Contains(t, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// renderProseSmart renders a prose chunk, but if it is mostly raw unfenced
+// code it collapses that chunk like a fenced block would be.
+func renderProseSmart(text string, width int, open map[int]bool, codeIdx *int) []string {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 5 {
+		return []string{renderMD(text, width)}
+	}
+	codeLike := 0
+	for _, ln := range lines {
+		if looksLikeCode(ln) {
+			codeLike++
+		}
+	}
+	if codeLike*100/len(lines) < 60 {
+		return []string{renderMD(text, width)}
+	}
+	// treat the whole chunk as one collapsed code block
+	id := *codeIdx
+	*codeIdx++
+	if open[id] {
+		return []string{codeHeaderStyle.Render(fmt.Sprintf("[code %d/%d lines · text · c collapse]", len(lines), len(lines))) +
+			"\n" + renderMD("```\n"+text+"\n```", width)}
+	}
+	summary := firstInteresting(lines)
+	return []string{codeHeaderStyle.Render(fmt.Sprintf("[code text · %d lines · %s · c expand]", len(lines), summary))}
 }
 
 // langLabel normalizes a fenced-code language tag for display.

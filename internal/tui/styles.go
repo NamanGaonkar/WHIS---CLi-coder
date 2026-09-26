@@ -22,4 +22,7 @@ var (
 
 	workingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#22D3EE")).Italic(true)
 	codeHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF")).Background(lipgloss.Color("#1F2937")).Padding(0, 1)
+
+	doneStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0B0F19")).Background(lipgloss.Color("#34D399")).Padding(0, 1)
+	doneTextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399"))
 )

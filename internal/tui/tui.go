@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,6 +91,8 @@ type model struct {
 	pendingProvider string       // provider for the custom id / key being entered
 	codeOpen        map[int]bool // expanded code blocks per md line index
 	mdSeq           int          // monotonic id for md lines
+	hasDone         bool         // last turn ended with a DONE banner
+	turnNum         int          // current agent turn (1-based)
 }
 
 // line is one transcript entry.
@@ -118,6 +121,7 @@ type AgentAPI interface {
 	ResumedTranscript() []TUILine
 	ResumeInfo() string
 	SetMode(mode string) error
+	Interrupt()
 }
 
 // TUIEvent bridges agent events into the TUI.
@@ -130,6 +134,7 @@ type TUIEvent struct {
 	ToolOK          bool
 	Approve         func(bool)
 	In, Cached, Out int
+	Turn            int
 	Cost            float64
 	DurationMS      int64
 } // Status feeds the header/status bars.
@@ -210,6 +215,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				if m.approval != "" {
 					m.answerApproval(false)
+					return m, nil
+				}
+				if m.status.Spinning {
+					// interrupt the running agent loop (gather/act/verify cycle)
+					m.agent.Interrupt()
 					return m, nil
 				}
 			case "y", "Y":
@@ -534,6 +544,24 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		m.planBuf += ev.Text
 	case "text":
 		m.streamBuf += ev.Text
+	case "notice":
+		m.flushStream()
+		m.lines = append(m.lines, line{kind: "info", body: ev.Text})
+		if strings.HasPrefix(ev.Text, "thinking · turn ") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(ev.Text, "thinking · turn ")); err == nil {
+				m.turnNum = n
+			}
+		}
+	case "usage":
+		// live telemetry mid-run: update bars without waiting for turn end
+		if ev.In > 0 || ev.Out > 0 {
+			m.status.In, m.status.Cached, m.status.Out = ev.In, ev.Cached, ev.Out
+			m.status.Cost += ev.Cost
+			m.status.Elapsed = fmt.Sprintf("%ds", int(time.Duration(ev.DurationMS)*time.Millisecond/time.Second)+1)
+		}
+		if ev.Turn > 0 {
+			m.turnNum = ev.Turn
+		}
 	case "tool_start":
 		m.flushStream()
 		m.lines = append(m.lines, line{kind: "tool", body: ev.ToolName + " " + ev.ToolArgs})
@@ -543,14 +571,19 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.approval = ev.Text
 		m.approveFn = ev.Approve
-	case "notice":
-		m.flushStream()
-		m.lines = append(m.lines, line{kind: "info", body: ev.Text})
 	case "turn_done":
 		m.flushStream()
 		m.status.Spinning = false
 		m.status.In, m.status.Cached, m.status.Out = ev.In, ev.Cached, ev.Out
 		m.status.Cost += ev.Cost
+		if ev.DurationMS > 0 {
+			m.status.Elapsed = (time.Duration(ev.DurationMS) * time.Millisecond).Round(time.Second).String()
+		}
+		if strings.Contains(ev.Text, "DONE:") {
+			m.hasDone = true
+		} else if ev.Text == "" {
+			m.hasDone = false
+		}
 	case "error":
 		m.flushStream()
 		m.status.Spinning = false
@@ -563,17 +596,39 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 	return m, waitMore(sc.rest)
 }
 
-// flushStream commits buffered prose / plan as transcript lines.
+// flushStream commits buffered prose / plan as transcript lines. A final
+// line matching "DONE: ..." is lifted out and rendered as a completion banner.
 func (m *model) flushStream() {
 	if m.streamBuf != "" {
-		m.mdSeq++
-		m.lines = append(m.lines, line{kind: "md", body: m.streamBuf, n: m.mdSeq})
+		body, summary := splitDone(m.streamBuf)
+		if body != "" {
+			m.mdSeq++
+			m.lines = append(m.lines, line{kind: "md", body: body, n: m.mdSeq})
+		}
+		if summary != "" {
+			m.lines = append(m.lines, line{kind: "done", body: summary})
+		}
 		m.streamBuf = ""
 	}
 	if m.planBuf != "" {
 		m.lines = append(m.lines, line{kind: "plan", body: m.planBuf})
 		m.planBuf = ""
 	}
+}
+
+// splitDone extracts a trailing "DONE: ..." line from a reply.
+// Returns (remaining body, summary) — summary empty when no footer found.
+func splitDone(s string) (string, string) {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-3; i-- {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, "DONE:") {
+			summary := strings.TrimSpace(strings.TrimPrefix(t, "DONE:"))
+			rest := strings.TrimSpace(strings.Join(append(lines[:i:i], lines[i+1:]...), "\n"))
+			return rest, summary
+		}
+	}
+	return s, ""
 }
 
 // waitMore schedules the next event read.
@@ -723,7 +778,8 @@ func (m model) sessionView() string {
 	return b.String()
 }
 
-// statusBar is the persistent telemetry bar.
+// statusBar is the persistent telemetry bar: tokens, cache, cost, context
+// gauge, and the live turn counter + timer while the agent runs.
 func (m model) statusBar() string {
 	st := m.agent.Status()
 	in, cached, out, cost := st.In, st.Cached, st.Out, st.Cost
@@ -733,6 +789,9 @@ func (m model) statusBar() string {
 	}
 	bar := fmt.Sprintf(" tokens %s/%s · cache %d%% · $%.4f · ctx %s",
 		commify(in), commify(out), hitPct, cost, ctxGauge(st.CtxUsed, st.CtxLimit))
+	if m.status.Spinning && m.turnNum > 0 {
+		bar += workingStyle.Render(fmt.Sprintf(" · turn %d · %s · esc to stop", m.turnNum, m.status.Elapsed))
+	}
 	return barStyle.Width(m.width - 1).MaxWidth(m.width - 1).Render(bar)
 }
 
@@ -752,8 +811,12 @@ func (m model) renderTranscript() string {
 			parts = append(parts, toolStyle.Render("> "+l.body))
 		case "toolout":
 			parts = append(parts, diffStyle(l.body))
-		case "error":
-			parts = append(parts, errStyle.Render("x "+l.body))
+		case "done":
+			elapsed := m.status.Elapsed
+			if elapsed == "" {
+				elapsed = "0s"
+			}
+			parts = append(parts, doneStyle.Render(" DONE ")+doneTextStyle.Render(" "+l.body+" ")+dimStyle.Render(" "+elapsed))
 		case "info":
 			parts = append(parts, dimStyle.Render("· "+l.body))
 		}

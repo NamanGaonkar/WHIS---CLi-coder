@@ -26,6 +26,7 @@ func (f *fakeAPI) SaveKey(prov, key string)              {}
 func (f *fakeAPI) ResumedTranscript() []TUILine          { return nil }
 func (f *fakeAPI) ResumeInfo() string                    { return "" }
 func (f *fakeAPI) SetMode(mode string) error             { return nil }
+func (f *fakeAPI) Interrupt()                            {}
 
 func newTestModel(t *testing.T) model {
 	t.Helper()
