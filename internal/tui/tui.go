@@ -144,7 +144,49 @@ func New(a AgentAPI) tea.Model {
 
 func (m model) Init() tea.Cmd { return textarea.Blink }
 
+// Update syncs the viewport AFTER every message is applied. CRITICAL: the
+// viewport MUST be fed content here and NOT in View() — View's mutations
+// happen on a value copy that Bubble Tea discards, so any SetContent done
+// there is lost and scrolling acts on an empty viewport (the bug that made
+// wheel/arrows dead in real runs).
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m2, cmd := m.update(msg)
+	mm := m2.(model)
+	mm.syncViewport()
+	return mm, cmd
+}
+
+// syncViewport re-renders the transcript into the viewport with correct
+// dimensions and preserves the follow-lock (stick to bottom unless the
+// user scrolled up).
+func (m *model) syncViewport() {
+	if m.width <= 0 || m.quitting {
+		return
+	}
+	vw := clampInt(m.width-1, 10, m.width) // last col reserved for scrollbar
+	wasBottom := m.vp.AtBottom()
+	m.vp.Width = vw
+	if m.over.mode != overlayNone && !m.splash {
+		// overlay layout: half of what remains after fixed chrome (header+sep
+		// 2, vp sep 1, panel border+padding 4, sep 1, status 1). Below 3 rows
+		// the viewport drops out of the overlay screen entirely (0 = hidden).
+		h := (m.height - 9) / 2
+		if h < 3 {
+			h = 0
+		}
+		m.vp.Height = clampInt(h, 0, 40)
+	} else {
+		inRows := strings.Count(m.input.View(), "\n") + 1
+		// non-viewport rows: header 1 + sep 1 + input (inRows+2) + pad 1 + status 1
+		m.vp.Height = clampInt(m.height-6-inRows, 3, m.height)
+	}
+	m.vp.SetContent(m.renderTranscript(vw))
+	if wasBottom {
+		m.vp.GotoBottom()
+	}
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -926,40 +968,24 @@ func (m model) sessionView() string {
 	ribbon := left + strings.Repeat(" ", fill) + right
 	b.WriteString(headerStyle.Width(clampInt(m.width-2, 10, m.width)).MaxWidth(m.width).Render(ribbon) + "\n")
 
-	// viewport width is shared by every layout branch (scrollbar column)
-	vw := clampInt(m.width-1, 10, m.width)
-	// wasBottom is read BEFORE the content swap: if the user was at the
-	// bottom of the OLD content, follow the new output; if they scrolled
-	// up to read history, leave the view alone.
-	wasBottom := m.vp.AtBottom()
+	// viewport content/dimensions are synced in Update -> syncViewport;
+	// the view here only READS the synced viewport (pure render).
 
-	// overlay-open layout first: the menu panel REPLACES the transcript
-	// (viewport shrinks to what is left, or drops out on tiny terminals).
-	// Budget: header 1 + sep 1 + panel (maxRows+4) + sep + status 1.
+	// overlay-open layout: the menu panel REPLACES the transcript.
+	// Rows: header+sep 2, vp H+1, panel (P + 2 border + 2 padding) + 1,
+	// status 1 => H + P + 8. syncViewport sets H = (height-9)/2, so
+	// P = height-H-8 closes the frame exactly.
 	if m.over.mode != overlayNone {
 		panelMax := clampInt(m.height-8, 1, 40)
-		if vpH := m.height - panelMax - 8; vpH >= 3 {
-			m.vp.Height = vpH
-			m.vp.SetContent(m.renderTranscript(vw))
-			if wasBottom {
-				m.vp.GotoBottom()
-			}
+		if m.vp.Height >= 3 {
 			b.WriteString(vpWithScrollbar(m.vp) + "\n")
+			panelMax = clampInt(m.height-m.vp.Height-9, 1, 40)
 		}
 		b.WriteString(m.menuBlock(panelMax) + "\n" + m.statusBar())
 		return b.String()
 	}
 
-	// transcript viewport with follow-lock (see wasBottom above).
-	m.vp.Width = vw
-	inRows := strings.Count(m.input.View(), "\n") + 1
-	// non-viewport rows: header 1 + vp separator 1 + input (inRows+2 border)
-	// + padding row 1 + status 1 = inRows + 6.
-	m.vp.Height = clampInt(m.height-6-inRows, 3, m.height)
-	m.vp.SetContent(m.renderTranscript(vw))
-	if wasBottom {
-		m.vp.GotoBottom()
-	}
+	// transcript viewport (content already synced, follow-lock applied).
 	b.WriteString(vpWithScrollbar(m.vp) + "\n")
 
 	// approval modal

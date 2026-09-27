@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -70,19 +71,28 @@ func TestSmokeLayoutNeverOverflows(t *testing.T) {
 		mm.streamBuf = ""
 		check("session+done", mm)
 
-		// every overlay on top of a session with history
+		// every overlay on top of a session with history. Menus open via
+		// Update in the real app, so re-sync the viewport after each poke.
+		sync := func(mm model) model {
+			m4, _ := mm.Update(tea.WindowSizeMsg{Width: sz.Width, Height: sz.Height})
+			return m4.(model)
+		}
 		mm.over.openProviderMenu(nil)
+		mm = sync(mm)
 		check("provider-menu", mm)
 		mm.over = overlay{}
 		mm.over.openModeMenu("ask")
+		mm = sync(mm)
 		check("mode-menu", mm)
 		mm.over = overlay{}
 		mm.over.openSessions("root")
+		mm = sync(mm)
 		check("sessions-menu", mm)
 
 		// wrapped input (multi-row textarea)
 		mm.over = overlay{}
 		mm.input.SetValue(strings.Repeat("long wrapped line of text ", 10))
+		mm = sync(mm)
 		check("wrapped-input", mm)
 	}
 }
@@ -198,10 +208,17 @@ func TestSmokeScrollKeys(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		m.lines = append(m.lines, line{kind: "info", body: "line"})
 	}
+	// reach the viewport via real Update passes (as the app does)
+	m2, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	before := m.vp.YOffset
+	if before <= 0 {
+		t.Fatalf("precondition: content must overflow (yoff=%d, h=%d)", before, m.vp.Height)
+	}
 	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	m = m2.(model)
-	if m.vp.YOffset != 0 {
-		t.Fatalf("pgup from bottom should leave offset %d, got %d", 0, m.vp.YOffset)
+	if m.vp.YOffset >= before {
+		t.Fatalf("pgup must scroll up: %d -> %d", before, m.vp.YOffset)
 	}
 	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
 	m = m2.(model)
@@ -251,6 +268,50 @@ func TestSmokeClipWideRunesAndParagraphs(t *testing.T) {
 	i2 := strings.Index(out, "para two")
 	if i1 < 0 || i2 < 0 || !strings.Contains(out[i1:i2], "\n\n") {
 		t.Fatalf("paragraph blank line lost between the two paras")
+	}
+}
+
+// TestSmokeArrowsVisiblyScroll renders a full session frame, presses up /
+// pgup / down, and asserts the VISIBLE frame changes (end-to-end navigation
+// proof, not just YOffset pokes).
+func TestSmokeArrowsVisiblyScroll(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = m2.(model)
+	m.splash = false
+	for i := 0; i < 60; i++ {
+		m.lines = append(m.lines, line{kind: "info", body: fmt.Sprintf("unique-line-%03d", i)})
+	}
+	// the real app syncs the viewport on every Update; simulate that here
+	// (direct field pokes need one Update pass to reach the viewport)
+	k, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = k.(model)
+	v1 := m.View()
+	if !strings.Contains(v1, "unique-line-059") {
+		t.Fatal("precondition: frame should show the newest line")
+	}
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = k.(model)
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = k.(model)
+	v2 := m.View()
+	if v2 == v1 {
+		t.Fatal("up arrows did NOT change the visible frame")
+	}
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = k.(model)
+	v3 := m.View()
+	if v3 == v2 {
+		t.Fatal("pgup did NOT change the visible frame")
+	}
+	if strings.Contains(v3, "unique-line-059") {
+		t.Fatal("scrolled up but still sees the bottom line")
+	}
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = k.(model)
+	v4 := m.View()
+	if v4 == v3 {
+		t.Fatal("down arrow did NOT change the visible frame")
 	}
 }
 
