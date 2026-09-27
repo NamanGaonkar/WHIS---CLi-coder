@@ -126,9 +126,13 @@ func Manifest() []Definition {
 		{"web_fetch", "Fetch a public web page or API endpoint and return readable text (HTML stripped). Use for docs, lookups, and internet research.", obj(map[string]any{
 			"url": str("http/https URL to fetch"),
 		}, "url")},
-		{"web_search", "Search the web (DuckDuckGo) and return the top results with titles, URLs and snippets. Use for current events, fresh facts, version numbers, scores, news - anything the model's training data cannot know.", obj(map[string]any{
+		{"web_search", "Search the web (Bing) and return the top results with titles, URLs and snippets. Use for current events, fresh facts, version numbers, scores, news - anything the model's training data cannot know.", obj(map[string]any{
 			"query": str("search query"),
 		}, "query")},
+		{"browser", "Drive a real headless Chromium: use when web_fetch returns a bot-challenge page, the site needs JavaScript, or you must verify a running local dev server or a live UI error. Actions: navigate (url), click (css selector), get_text (css selector), screenshot (optional path), close.", obj(map[string]any{
+			"action": str("navigate | click | get_text | screenshot | close"),
+			"arg":    str("url for navigate, css selector for click/get_text, optional save path for screenshot"),
+		}, "action")},
 	}
 }
 
@@ -161,6 +165,8 @@ func (e *Env) Execute(name string, args json.RawMessage) Result {
 		return e.WebFetch(gs("url"))
 	case "web_search":
 		return e.WebSearch(gs("query"))
+	case "browser":
+		return e.Browser(gs("action"), gs("arg"))
 	}
 	return Result{Output: "unknown tool: " + name}
 }

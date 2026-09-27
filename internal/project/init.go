@@ -124,6 +124,11 @@ func SystemPrompt(workspace string, tools []string) string {
 Tool discipline:
 - web_search(query): current events, fresh facts, anything after your cutoff.
 - web_fetch(url): full page text for a specific URL (pair with web_search).
+- browser(action, arg): real headless Chromium for JS-rendered pages and
+  sites that bot-block web_fetch (challenge pages), and for verifying a
+  running dev server. Actions: navigate/click/get_text/screenshot/close.
+  If it reports the engine is not installed, tell the user to run
+  whis browser-install and fall back to web_search/web_fetch.
 - locate_symbol: extract a symbol body via the AST index (cheapest).
 - read_range: numbered line slices.
 - apply_patch: SEARCH/REPLACE edit; empty SEARCH creates a new file.

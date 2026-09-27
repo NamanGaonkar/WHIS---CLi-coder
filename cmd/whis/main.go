@@ -15,7 +15,10 @@ import (
 	"whis/internal/project"
 	"whis/internal/provider"
 	"whis/internal/session"
+	"whis/internal/tool"
 	"whis/internal/tui"
+
+	"github.com/playwright-community/playwright-go"
 )
 
 var version = "0.1.0"
@@ -48,6 +51,13 @@ func main() {
 		if err := tui.RunInitWizard(); err != nil {
 			fatal(err)
 		}
+		return
+	case "browser-install":
+		fmt.Println("downloading headless Chromium (one-time, ~90 MB)...")
+		if err := playwright.Install(&playwright.RunOptions{Browsers: []string{"chromium"}}); err != nil {
+			fatal(err)
+		}
+		fmt.Println("browser engine ready.")
 		return
 	}
 	if *initFlag {
@@ -100,6 +110,9 @@ func main() {
 	}
 	adapter := tui.NewAdapter(a, keys)
 	adapter.Cfg = cfg
+	// clean up the browser engine (if the agent launched it) when the
+	// interactive session ends.
+	defer tool.CloseBrowser()
 	// WithMouseCellMotion enables terminal mouse reporting: without it the
 	// TUI never receives wheel events (scrollbar stays dead).
 	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -148,6 +161,7 @@ func headless(a *agent.Agent, prompt string) {
 	if err != nil {
 		fatal(err)
 	}
+	defer tool.CloseBrowser()
 	for ev := range ch {
 		switch ev.Type {
 		case "reasoning":
