@@ -177,8 +177,12 @@ type oaChunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		// DeepSeek style: cache hits reported at top level; hit+miss = prompt
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+		// OpenAI style: nested details
 		PromptTokensDetails *struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
@@ -205,7 +209,15 @@ func (s *oaStream) Next() (Delta, error) {
 		}
 		if ch.Usage != nil {
 			u := Usage{In: ch.Usage.PromptTokens, Out: ch.Usage.CompletionTokens}
-			if ch.Usage.PromptTokensDetails != nil {
+			// DeepSeek reports cache hits at top level (hit + miss = prompt);
+			// OpenAI reports them nested in prompt_tokens_details.
+			if ch.Usage.PromptCacheHitTokens > 0 {
+				u.Cached = ch.Usage.PromptCacheHitTokens
+				if ch.Usage.PromptCacheMissTokens > 0 &&
+					ch.Usage.PromptCacheHitTokens+ch.Usage.PromptCacheMissTokens != u.In {
+					u.In = ch.Usage.PromptCacheHitTokens + ch.Usage.PromptCacheMissTokens
+				}
+			} else if ch.Usage.PromptTokensDetails != nil {
 				u.Cached = ch.Usage.PromptTokensDetails.CachedTokens
 			}
 			s.usage = &u
