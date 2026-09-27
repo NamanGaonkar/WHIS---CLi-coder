@@ -47,6 +47,8 @@ type Agent struct {
 	Tools   *tool.Env
 	System  string
 	MaxTurn int
+	// Mem is the persistent cross-session memory store (nil when disabled).
+	Mem memDigestSource
 
 	// askApproval is re-armed each turn by the loop; it blocks on the TUI.
 	askApproval func(string) bool
@@ -55,6 +57,13 @@ type Agent struct {
 	// (name + args) so an identical repeat never re-executes and the model
 	// gets a STOP instruction instead of looping forever.
 	lastToolResult map[string]tool.Result
+}
+
+// memDigestSource is what rebuildSystem needs from the memory store
+// (satisfied by *memory.Store via the adapter in memory.go).
+type memDigestSource interface {
+	Digest(maxChars int) string
+	Count() int
 }
 
 // Work modes.
@@ -99,7 +108,7 @@ func NewUnbound(root string, auto bool) *Agent {
 	a.Tools.AutoApprove = auto
 	a.installApprovals()
 	a.Tools.OnSnapshot = a.snapshot
-	a.rebuildSystem()
+	a.attachMemory()
 	return a
 }
 
@@ -140,6 +149,14 @@ func (a *Agent) rebuildSystem() {
 	a.System = project.SystemPrompt(a.Root, names)
 	a.System += "\n\n" + a.modeDirective()
 	a.System += "\n\n" + completionDirective()
+	// persistent memory: remembered facts ride the cached system prompt so
+	// every session starts already knowing them.
+	if a.Mem != nil {
+		if d := a.Mem.Digest(4000); d != "" {
+			a.System += "\n\n--- PERSISTENT MEMORY (facts the user asked you to remember; " +
+				"use memory_forget to delete one) ---\n" + d
+		}
+	}
 	// WHIS.md project guide rides the static system block (cache-friendly).
 	if b, err := os.ReadFile(filepath.Join(a.Root, "WHIS.md")); err == nil && len(b) > 0 {
 		a.System += "\n\n--- WHIS.md (project guide) ---\n" + string(b)

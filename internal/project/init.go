@@ -122,6 +122,9 @@ func SystemPrompt(workspace string, tools []string) string {
 7. APPROVALS. Shell commands and file edits require user approval unless auto-approved.
 
 Tool discipline:
+- MEMORY: when the user says "remember ...", store it with memory_save
+  (one self-contained sentence). Their memories are injected above; use
+  memory_recall to double-check details, memory_forget to delete one.
 - web_search(query): current events, fresh facts, anything after your cutoff.
 - web_fetch(url): full page text for a specific URL (pair with web_search).
 - browser(action, arg): real headless Chromium for JS-rendered pages and

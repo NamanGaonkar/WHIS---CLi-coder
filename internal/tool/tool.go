@@ -42,8 +42,27 @@ type Env struct {
 	AskApproval func(action string) bool
 	// OnSnapshot is called before each mutation (used by /undo).
 	OnSnapshot func() error
+	// Mem is the persistent cross-session memory store (nil-safe: memory
+	// tools degrade gracefully when unset, e.g. in /task subagents).
+	Mem        MemoryStore
 	index      *Index
 	indexBuilt bool
+}
+
+// MemHit is one memory row crossing the tool boundary.
+type MemHit struct {
+	ID   int
+	Text string
+}
+
+// MemoryStore is the memory capability the tool env needs (implemented by
+// the agent's adapter over *memory.Store; an interface keeps the tool
+// package dependency-free).
+type MemoryStore interface {
+	Save(text string) MemHit
+	Forget(id int, textQuery string) int
+	Search(query string) []MemHit
+	Count() int
 }
 
 // Action risk classes.
@@ -126,9 +145,16 @@ func Manifest() []Definition {
 		{"web_fetch", "Fetch a public web page or API endpoint and return readable text (HTML stripped). Use for docs, lookups, and internet research.", obj(map[string]any{
 			"url": str("http/https URL to fetch"),
 		}, "url")},
-		{"web_search", "Search the web (Bing) and return the top results with titles, URLs and snippets. Use for current events, fresh facts, version numbers, scores, news - anything the model's training data cannot know.", obj(map[string]any{
-			"query": str("search query"),
-		}, "query")},
+		{"memory_save", "Persist a durable fact the user asked to remember (preferences, project context, decisions). It becomes available in ALL future sessions.", obj(map[string]any{
+			"text": str("the fact to remember, one self-contained sentence"),
+		}, "text")},
+		{"memory_recall", "Search previously remembered facts. Use when the user refers to something they told you earlier.", obj(map[string]any{
+			"query": str("words to search for (empty = list everything)"),
+		})},
+		{"memory_forget", "Delete one remembered fact (by its id from memory_recall, or by matching words).", obj(map[string]any{
+			"id":   num("memory id to delete"),
+			"text": str("or: words matching the memory to delete"),
+		})},
 		{"browser", "Drive a real headless Chromium: use when web_fetch returns a bot-challenge page, the site needs JavaScript, or you must verify a running local dev server or a live UI error. Actions: navigate (url), click (css selector), get_text (css selector), screenshot (optional path), close.", obj(map[string]any{
 			"action": str("navigate | click | get_text | screenshot | close"),
 			"arg":    str("url for navigate, css selector for click/get_text, optional save path for screenshot"),
@@ -167,8 +193,52 @@ func (e *Env) Execute(name string, args json.RawMessage) Result {
 		return e.WebSearch(gs("query"))
 	case "browser":
 		return e.Browser(gs("action"), gs("arg"))
+	case "memory_save":
+		if e.Mem == nil {
+			return Result{OK: false, Output: "memory store unavailable"}
+		}
+		text := strings.TrimSpace(gs("text"))
+		if text == "" {
+			return Result{OK: false, Output: "memory_save needs text"}
+		}
+		if len(text) > 500 {
+			text = text[:500]
+		}
+		e.Mem.Save(text)
+		return Result{OK: true, Output: "remembered: " + text}
+	case "memory_recall":
+		if e.Mem == nil {
+			return Result{OK: false, Output: "memory store unavailable"}
+		}
+		q := strings.TrimSpace(gs("query"))
+		rows := e.Mem.Search(q)
+		if len(rows) == 0 {
+			return Result{OK: true, Output: "no memories matched" + maybeQuery(q)}
+		}
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("%d memories:\n", len(rows)))
+		for _, r := range rows {
+			fmt.Fprintf(&b, "%d. %s\n", r.ID, r.Text)
+		}
+		return Result{OK: true, Output: strings.TrimSpace(b.String())}
+	case "memory_forget":
+		if e.Mem == nil {
+			return Result{OK: false, Output: "memory store unavailable"}
+		}
+		n := e.Mem.Forget(gi("id"), gs("text"))
+		if n == 0 {
+			return Result{OK: false, Output: "no matching memory to forget"}
+		}
+		return Result{OK: true, Output: fmt.Sprintf("forgot %d memor%s", n, map[bool]string{true: "y", false: "ies"}[n == 1])}
 	}
 	return Result{Output: "unknown tool: " + name}
+}
+
+func maybeQuery(q string) string {
+	if q != "" {
+		return " for \"" + q + "\""
+	}
+	return ""
 }
 
 // resolve safely joins a workspace-relative path.

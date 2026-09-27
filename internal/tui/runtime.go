@@ -11,6 +11,7 @@ import (
 
 	"whis/internal/agent"
 	"whis/internal/config"
+	"whis/internal/memory"
 	"whis/internal/project"
 	"whis/internal/provider"
 	"whis/internal/session"
@@ -161,6 +162,20 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
 			return "", err
 		}
 		return "wrote WHIS.md (" + fmt.Sprint(len(md)) + " bytes)", nil
+	case "/memory":
+		st := memory.Load()
+		if len(fields) >= 2 && fields[1] == "forget" && len(fields) >= 3 {
+			n := st.Forget(0, strings.Join(fields[2:], " "))
+			if n == 0 {
+				return "no memory matched", nil
+			}
+			ad.A.RebuildSystemFromMemory()
+			return fmt.Sprintf("forgot %d memor%s", n, map[bool]string{true: "y", false: "ies"}[n == 1]), nil
+		}
+		if st.Count() == 0 {
+			return "memory is empty - tell whis things like \"remember that I prefer tabs\"", nil
+		}
+		return "persistent memories (survive all sessions):\n" + st.Digest(60000), nil
 	case "/sessions":
 		return strings.Join(session.List(), "\n"), nil
 	case "/help":
@@ -170,6 +185,8 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
   /undo           roll back to the last pre-edit snapshot
   /init           (re)generate WHIS.md project guide
   /sessions       list saved sessions
+  /memory         show remembered facts (survive all sessions)
+  /memory forget <words>   delete matching memories
   /themes         switch the color palette (also: ? or ctrl+t)
   /help           this help
 keys:
@@ -177,7 +194,10 @@ keys:
   ?       theme picker
   Ctrl+T  theme picker        Ctrl+P  plan pane toggle
   Ctrl+O  expand code blocks  Ctrl+C/D quit
-  y/n     approve diffs       esc     stop the agent
+  y/n     approve diffs       esc     back one menu (main screen at root)
+memory:
+  just say "remember that ..." — whis stores it permanently and knows it
+  in every future chat (memory_save / memory_recall / memory_forget)
 provider keys:
   / -> provider -> "edit / re-enter a provider key" replaces a saved key`, nil
 	}
