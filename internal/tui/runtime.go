@@ -289,9 +289,19 @@ func (ad *Adapter) PickModel(slug string) (string, error) {
 }
 
 // SaveKey stores a provider key into config and the live key set.
+// Clipboard paste often drags in trailing spaces/newlines (or zero-width
+// chars) which make the provider reject a perfectly good key — sanitize
+// before storing.
 func (ad *Adapter) SaveKey(prov, key string) {
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
+	key = strings.TrimSpace(key)
+	key = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7F || (r >= 0x200B && r <= 0x200F) || r == 0xFEFF {
+			return -1
+		}
+		return r
+	}, key)
 	switch prov {
 	case "deepseek":
 		ad.Cfg.Keys.DeepSeek = key
