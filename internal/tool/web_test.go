@@ -46,6 +46,32 @@ func TestBlockedPageDetection(t *testing.T) {
 	}
 }
 
+func TestParseBingResults(t *testing.T) {
+	page := `<ol id="b_results"><li class="b_algo"><h2><a href="https://www.iplt20.com/news/abc">RCB lift their first IPL title in 2025</a></h2><div class="b_caption"><p>Royal Challengers Bengaluru beat Punjab Kings by 6 runs in the final.</p></div></li><li class="b_algo"><h2><a href="https://en.wikipedia.org/wiki/2025_IPL_final">2025 IPL final</a></h2><p>Played at Narendra Modi Stadium.</p></li></ol>`
+	hits := parseBingResults(page)
+	if len(hits) != 2 {
+		t.Fatalf("got %d hits, want 2", len(hits))
+	}
+	if !strings.Contains(hits[0].Title, "RCB lift") || hits[0].URL != "https://www.iplt20.com/news/abc" {
+		t.Fatalf("bad first hit: %+v", hits[0])
+	}
+	if !strings.Contains(hits[0].Snippet, "Punjab Kings") {
+		t.Fatalf("snippet lost: %+v", hits[0])
+	}
+}
+
+func TestCollapseSquash(t *testing.T) {
+	if got := collapseSpace("a    b\t\tc\n\n d"); got != "a b c\n\n d" {
+		t.Fatalf("collapseSpace = %q", got)
+	}
+	if got := cleanText("ok\u200b\u00aday\x07!"); got != "okay!" {
+		t.Fatalf("cleanText = %q", got)
+	}
+	if got := squashLines("line one    spaced\n\n\nline two"); got != "line one spaced\nline two" {
+		t.Fatalf("squashLines = %q", got)
+	}
+}
+
 func TestReaderURLEscapes(t *testing.T) {
 	got := readerURL("https://example.com/a b?q=1")
 	if !strings.HasPrefix(got, "https://r.jina.ai/https://example.com/") {

@@ -50,6 +50,11 @@ type Agent struct {
 
 	// askApproval is re-armed each turn by the loop; it blocks on the TUI.
 	askApproval func(string) bool
+
+	// lastToolResult caches the most recent result per tool-call signature
+	// (name + args) so an identical repeat never re-executes and the model
+	// gets a STOP instruction instead of looping forever.
+	lastToolResult map[string]tool.Result
 }
 
 // Work modes.
@@ -85,9 +90,10 @@ func New(root, slug string, keys map[string]string, auto bool) (*Agent, error) {
 func NewUnbound(root string, auto bool) *Agent {
 	a := &Agent{
 		Root: root, AutoApprove: auto, Mode: ModeAsk,
-		Sess:    session.NewForRoot("", root),
-		Tools:   tool.NewEnv(root),
-		MaxTurn: 40,
+		Sess:           session.NewForRoot("", root),
+		Tools:          tool.NewEnv(root),
+		MaxTurn:        40,
+		lastToolResult: map[string]tool.Result{},
 	}
 	a.Tools.RiskBased = !auto
 	a.Tools.AutoApprove = auto
@@ -191,7 +197,7 @@ func (a *Agent) SetMode(mode string) error {
 func (a *Agent) allowedTools() []provider.Tool {
 	readOnly := map[string]bool{
 		"locate_symbol": true, "read_range": true,
-		"search_codebase": true, "list_tree": true, "web_fetch": true,
+		"search_codebase": true, "list_tree": true, "web_fetch": true, "web_search": true,
 	}
 	var out []provider.Tool
 	for _, d := range tool.Manifest() {
@@ -322,6 +328,16 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 				continue
 			}
 			res := a.Tools.Execute(c.Name, c.Args)
+			// anti-loop: identical repeating tool calls get a deterministic
+			// cache of the previous result (free) plus a STOP instruction.
+			sig := c.Name + "|" + string(c.Args)
+			if prev, seen := a.lastToolResult[sig]; seen {
+				res = tool.Result{OK: prev.OK, Output: prev.Output +
+					"\n[stop] this exact call already ran with this result. Do NOT repeat it: " +
+					"use what you have, try a different tool/arguments, or write the final answer now."}
+			} else {
+				a.lastToolResult[sig] = res
+			}
 			emit(out, Event{Type: "tool_end", ToolName: c.Name, ToolOutput: res.Output, ToolOK: res.OK})
 			a.Sess.Append(session.Msg{Role: "tool", Content: res.Output, ToolCallID: c.ID})
 		}

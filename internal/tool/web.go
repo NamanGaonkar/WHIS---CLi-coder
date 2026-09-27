@@ -20,8 +20,206 @@ const webMaxBytes = 768 * 1024
 // webMaxChars caps the text handed to the model.
 const webMaxChars = 6000
 
-// webReadPrefix is how much of the extracted text the jina reader may keep.
-const webReadPrefix = 6000
+// webSearchMaxChars caps the search results digest handed to the model.
+const webSearchMaxChars = 3000
+
+// zeroWidthRe strips zero-width / obfuscation chars and stray C0 controls
+// from extracted page text. Sites inject zero-width joiners to defeat
+// scrapers; left in, they garble the transcript ("s p a c e d" text) and
+// skew column math. LF is preserved.
+var zeroWidthRe = regexp.MustCompile(`[\x{200B}-\x{200F}\x{2060}-\x{2064}\x{FEFF}\x{00AD}\x{0000}-\x{0008}\x{000B}-\x{001F}\x{007F}]`)
+
+// cleanText removes obfuscation characters from extracted page text.
+func cleanText(s string) string {
+	return zeroWidthRe.ReplaceAllString(s, "")
+}
+
+// searchHit is one web search result.
+type searchHit struct {
+	Title   string
+	URL     string
+	Snippet string
+}
+
+var (
+	ddgAnchorRe  = regexp.MustCompile(`(?is)<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
+	ddgSnippetRe = regexp.MustCompile(`(?is)<a[^>]+class="result__snippet"[^>]*>(.*?)</a>`)
+	bingAlgoRe   = regexp.MustCompile(`(?is)<li class="b_algo"`)
+	bingLinkRe   = regexp.MustCompile(`(?is)<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
+	bingParaRe   = regexp.MustCompile(`(?is)<p[^>]*>(.*?)</p>`)
+)
+
+// parseBingResults extracts hits from a Bing results page: each b_algo list
+// item carries an h2>link (title), plus a paragraph snippet.
+func parseBingResults(body string) []searchHit {
+	chunks := bingAlgoRe.Split(body, -1)
+	hits := []searchHit{}
+	for _, chunk := range chunks[1:] { // skip the pre-first-item preamble
+		m := bingLinkRe.FindStringSubmatch(chunk)
+		if m == nil {
+			continue
+		}
+		href := strings.TrimSpace(html.UnescapeString(m[1]))
+		if href == "" || isPrivateHost(mustHost(href)) {
+			continue
+		}
+		h := searchHit{
+			Title: strings.TrimSpace(cleanText(collapseSpace(unescapeAll(tagRe.ReplaceAllString(m[2], ""))))),
+			URL:   href,
+		}
+		if p := bingParaRe.FindStringSubmatch(chunk); p != nil {
+			h.Snippet = strings.TrimSpace(cleanText(collapseSpace(unescapeAll(tagRe.ReplaceAllString(p[1], "")))))
+		}
+		hits = append(hits, h)
+		if len(hits) >= 8 {
+			break
+		}
+	}
+	return hits
+}
+
+// parseDDGResults extracts hits from the DuckDuckGo html endpoint output.
+func parseDDGResults(body string) []searchHit {
+	anchors := ddgAnchorRe.FindAllStringSubmatch(body, -1)
+	snips := ddgSnippetRe.FindAllStringSubmatch(body, -1)
+	hits := []searchHit{}
+	for i, m := range anchors {
+		href := html.UnescapeString(m[1])
+		// DDG wraps outbound links in /l/?uddg=<encoded> redirects
+		if u, err := url.Parse(href); err == nil && u.Query().Get("uddg") != "" {
+			href = u.Query().Get("uddg")
+		}
+		if href == "" || isPrivateHost(mustHost(href)) {
+			continue
+		}
+		h := searchHit{
+			Title: strings.TrimSpace(cleanText(collapseSpace(unescapeAll(tagRe.ReplaceAllString(m[2], ""))))),
+			URL:   strings.TrimSpace(href),
+		}
+		if i < len(snips) {
+			h.Snippet = strings.TrimSpace(cleanText(collapseSpace(unescapeAll(tagRe.ReplaceAllString(snips[i][1], "")))))
+		}
+		hits = append(hits, h)
+		if len(hits) >= 8 {
+			break
+		}
+	}
+	return hits
+}
+
+// mustHost extracts the hostname of a URL ("" on parse failure).
+func mustHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// WebSearch runs a web search and returns a compact digest of the top
+// results. Bing primary (accepts plain GETs with browser headers), DuckDuckGo
+// html endpoint fallback (bot-walls some networks), reader proxy last.
+func (e *Env) WebSearch(query string) Result {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return Result{Output: "empty query"}
+	}
+	res := e.bingSearch(query)
+	if res.OK {
+		return res
+	}
+	res = e.ddgSearch(query)
+	if res.OK {
+		return res
+	}
+	// last resort: reader proxy renders the results page server-side;
+	// squash its markdown so results are one compact line per hit.
+	res2 := e.readerFetch("https://www.bing.com/search?q=" + url.QueryEscape(query))
+	if !res2.OK {
+		return Result{OK: false, Output: "search failed: " + res.Output}
+	}
+	out := squashLines(cleanText(res2.Output))
+	if len(out) > webSearchMaxChars {
+		out = out[:webSearchMaxChars] + "\n... (truncated)"
+	}
+	return Result{OK: true, Output: "web search results for: " + query + "\n\n" + out}
+}
+
+// searchGet fetches a search-engine results page with browser-like headers.
+func (e *Env) searchGet(searchURL string) (string, *http.Response, error) {
+	u, err := url.Parse(searchURL)
+	if err != nil {
+		return "", nil, err
+	}
+	client := webClient()
+	req, err := http.NewRequest(http.MethodGet, searchURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	for k, vs := range webHeaders(u) {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", resp, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	body, err := webBody(resp)
+	if err != nil {
+		return "", resp, err
+	}
+	return body, resp, nil
+}
+
+// formatSearchDigest renders parsed hits the same way for every engine.
+func formatSearchDigest(query string, hits []searchHit) Result {
+	if len(hits) == 0 {
+		return Result{OK: false, Output: "no results parsed"}
+	}
+	var b strings.Builder
+	b.WriteString("web search results for: " + query + "\n")
+	for i, h := range hits {
+		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, h.Title, h.URL)
+		if h.Snippet != "" {
+			fmt.Fprintf(&b, "   %s\n", h.Snippet)
+		}
+	}
+	out := b.String()
+	if len(out) > webSearchMaxChars {
+		out = out[:webSearchMaxChars] + "\n... (truncated)"
+	}
+	return Result{OK: true, Output: out}
+}
+
+// bingSearch scrapes Bing's results page (works with plain GETs + browser
+// headers from networks where DDG bot-walls).
+func (e *Env) bingSearch(query string) Result {
+	body, resp, err := e.searchGet("https://www.bing.com/search?q=" + url.QueryEscape(query))
+	if err != nil {
+		return Result{OK: false, Output: "bing: " + err.Error()}
+	}
+	if resp != nil && blockedPage(body, resp.Header.Get("Content-Type")) {
+		return Result{OK: false, Output: "bing blocked by bot wall"}
+	}
+	return formatSearchDigest(query, parseBingResults(body))
+}
+
+// ddgSearch hits the DuckDuckGo html endpoint with browser-like headers.
+func (e *Env) ddgSearch(query string) Result {
+	body, resp, err := e.searchGet("https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query))
+	if err != nil {
+		return Result{OK: false, Output: "ddg: " + err.Error()}
+	}
+	if resp != nil && blockedPage(body, resp.Header.Get("Content-Type")) {
+		return Result{OK: false, Output: "ddg blocked by bot wall"}
+	}
+	return formatSearchDigest(query, parseDDGResults(body))
+}
 
 var (
 	scriptStyleRe = regexp.MustCompile(`(?is)<(script|style|noscript|svg|head)\b[^>]*>.*?</(script|style|noscript|svg|head)>`)
@@ -36,7 +234,7 @@ var (
 func webClient() *http.Client {
 	jar, _ := cookiejar.New(nil)
 	return &http.Client{
-		Timeout: 25 * time.Second,
+		Timeout: 15 * time.Second,
 		Jar:     jar,
 	}
 }
@@ -241,7 +439,7 @@ func (e *Env) readerFetch(rawURL string) Result {
 	if err != nil {
 		return Result{OK: false, Output: "reader read failed: " + err.Error()}
 	}
-	text := strings.TrimSpace(b)
+	text := cleanText(strings.TrimSpace(b))
 	if text == "" {
 		return Result{OK: false, Output: "reader returned empty content for " + rawURL}
 	}
@@ -252,12 +450,13 @@ func (e *Env) readerFetch(rawURL string) Result {
 }
 
 // extractText strips script/style/head blocks and all tags, collapses the
-// whitespace, and caps the result for the model.
+// whitespace, removes obfuscation characters, and caps the result.
 func extractText(body string) string {
 	text := unescapeAll(scriptStyleRe.ReplaceAllString(body, " "))
 	text = collapseSpace(tagRe.ReplaceAllString(text, " "))
 	text = spaceRe.ReplaceAllString(text, " ")
 	text = blankRe.ReplaceAllString(text, "\n\n")
+	text = cleanText(text)
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
@@ -271,7 +470,30 @@ func extractText(body string) string {
 // unescapeAll and collapseSpace are extracted for testability.
 func unescapeAll(s string) string { return html.UnescapeString(s) }
 
-func collapseSpace(s string) string { return s }
+// multiSpaceRe matches runs of horizontal whitespace.
+var multiSpaceRe = regexp.MustCompile(`[^\S\n]{2,}`)
+
+// collapseSpace collapses runs of spaces/tabs into one space. It used to be
+// a no-op, which left ragged "endless     space" gaps in titles, snippets
+// and page text.
+func collapseSpace(s string) string { return multiSpaceRe.ReplaceAllString(s, " ") }
+
+// squashLines normalizes a markdown/text dump for the model: every line's
+// internal whitespace runs become single spaces, empty lines drop out.
+// Reader-proxy output (used for search fallback) is link-per-line markdown
+// with huge blank gaps; this compacts it without losing structure.
+func squashLines(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		ln = strings.TrimSpace(spaceRe.ReplaceAllString(ln, " "))
+		if ln == "" {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
+}
 
 // isPrivateHost rejects loopback / LAN targets.
 func isPrivateHost(host string) bool {
