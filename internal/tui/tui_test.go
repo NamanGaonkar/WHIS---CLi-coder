@@ -11,7 +11,8 @@ import (
 
 // fakeAPI is a controllable AgentAPI for tests.
 type fakeAPI struct {
-	evs chan TUIEvent
+	evs   chan TUIEvent
+	saved map[string]string
 }
 
 func (f *fakeAPI) Run(prompt string) (<-chan TUIEvent, error) { return f.evs, nil }
@@ -20,11 +21,16 @@ func (f *fakeAPI) Status() Status {
 	return Status{Model: "test-model", Provider: "test", Mode: "ask", Branch: "main"}
 }
 
-func (f *fakeAPI) Keys() map[string]string               { return map[string]string{} }
+func (f *fakeAPI) Keys() map[string]string { return f.saved }
+func (f *fakeAPI) SaveKey(prov, key string) {
+	if f.saved == nil {
+		f.saved = map[string]string{}
+	}
+	f.saved[prov] = key
+}
 func (f *fakeAPI) Workspace() string                     { return "/tmp" }
 func (f *fakeAPI) Ready() bool                           { return true }
 func (f *fakeAPI) PickModel(slug string) (string, error) { return "model → " + slug, nil }
-func (f *fakeAPI) SaveKey(prov, key string)              {}
 func (f *fakeAPI) ResumedTranscript() []TUILine          { return nil }
 func (f *fakeAPI) ResumeInfo() string                    { return "" }
 func (f *fakeAPI) SetMode(mode string) error             { return nil }
@@ -32,7 +38,7 @@ func (f *fakeAPI) Interrupt()                            {}
 
 func newTestModel(t *testing.T) model {
 	t.Helper()
-	m := New(&fakeAPI{evs: make(chan TUIEvent)}).(model)
+	m := New(&fakeAPI{evs: make(chan TUIEvent), saved: map[string]string{}}).(model)
 	// simulate a reasonable window
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	return m2.(model)
@@ -238,6 +244,61 @@ func TestSlashMenuRouteThemes(t *testing.T) {
 	m.runSlash("/themes")
 	if m.over.mode != overlayThemes {
 		t.Fatal("/themes should open the theme menu")
+	}
+}
+
+func TestEditProviderKeyFlow(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	// open the provider menu; the edit row must exist
+	m.over.openProviderMenu(map[string]string{"deepseek": "sk-1234567890abcd"})
+	found := false
+	for _, it := range m.over.items {
+		if it.value == "@editkey" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("provider menu has no edit-key row")
+	}
+	// click / enter the edit row -> key editor menu
+	m.over.cursor = len(m.over.items) - 1
+	m2, _ = m.activateOverlay()
+	m = m2.(model)
+	if m.over.title != "EDIT PROVIDER KEY" {
+		t.Fatalf("edit row should open the key editor, got %q", m.over.title)
+	}
+	// pick deepseek -> straight into the masked key form
+	m.over.cursor = 0
+	for i, it := range m.over.items {
+		if it.value == "@set:deepseek" {
+			m.over.cursor = i
+		}
+	}
+	m2, _ = m.activateOverlay()
+	m = m2.(model)
+	if m.over.mode != overlayKeyInput || m.over.provider != "deepseek" {
+		t.Fatalf("expected key form for deepseek, got mode %v prov %q", m.over.mode, m.over.provider)
+	}
+	// save a new key
+	m.input.SetValue("sk-new-key-999")
+	m2, _ = m.saveKeyAndContinue()
+	m = m2.(model)
+	if k := m.agent.Keys()["deepseek"]; k != "sk-new-key-999" {
+		t.Fatalf("key not replaced, got %q", k)
+	}
+}
+
+func TestSanitizeTextStripsBell(t *testing.T) {
+	in := "beep\x07now\r\ntab\there\x1b[31m"
+	out := sanitizeText(in)
+	if strings.ContainsAny(out, "\x07\r\x1b") {
+		t.Fatalf("control chars survived: %q", out)
+	}
+	if !strings.Contains(out, "beepnow") || !strings.Contains(out, "tab    here") {
+		t.Fatalf("sanitizer mangled text: %q", out)
 	}
 }
 
