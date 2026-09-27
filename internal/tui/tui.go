@@ -13,8 +13,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Version is set from main.
-var Version = "0.1.0"
+// Version is set from main at boot (release builds inject the tag).
+var Version = "0.1.4"
 
 // renderMD renders markdown with a dark glamour theme (falls back to plain).
 func renderMD(md string, width int) string {
@@ -177,17 +177,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.vp.GotoBottom()
 				return m, nil
 			case "up", "down":
-				// arrows scroll the chat when the input is EMPTY. Windows
-				// ConPTY translates mouse wheel to arrow keys for legacy
-				// input, so this path is also what makes the wheel work.
-				if strings.TrimSpace(m.input.Value()) == "" {
-					if msg.String() == "up" {
-						m.vp.LineUp(2)
-					} else {
-						m.vp.LineDown(2)
-					}
-					return m, nil
+				// arrows ALWAYS scroll the chat. Windows ConPTY translates
+				// the mouse wheel to arrow keys, so this is also the wheel
+				// path. Caret stays editable via left/right/home/end-free.
+				if msg.String() == "up" {
+					m.vp.LineUp(2)
+				} else {
+					m.vp.LineDown(2)
 				}
+				return m, nil
 			}
 		}
 
