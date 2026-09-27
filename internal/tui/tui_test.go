@@ -167,9 +167,10 @@ func TestInputBoxFullyBlack(t *testing.T) {
 	if !strings.Contains(v, "\x1b[48;5;16m") && !strings.Contains(v, "\x1b[40m") {
 		t.Fatalf("input box border/padding rows lost the black backing:\n%q", v)
 	}
-	pad := blackFill.Render(strings.Repeat(" ", 60))
-	if !strings.Contains(pad, "\x1b[48;5;16m") && !strings.Contains(pad, "\x1b[40m") {
-		t.Fatalf("black filler row lost its backing: %q", pad)
+	// the status band is its own black strip, separate from the box
+	sb := m.statusBar()
+	if !strings.Contains(sb, "\x1b[48;5;16m") && !strings.Contains(sb, "\x1b[40m") {
+		t.Fatalf("status bar lost its black backing: %q", sb)
 	}
 }
 
@@ -195,6 +196,36 @@ func TestThemesSwitch(t *testing.T) {
 	}
 	if mm.over.mode != overlayNone {
 		t.Fatal("theme menu should close after applying")
+	}
+}
+
+func TestMouseClickSelectsThemes(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	mm := m2.(model)
+	if mm.over.mode != overlaySlashMenu {
+		t.Fatal("precondition: slash menu open")
+	}
+	// find the frame row of the themes item in the rendered frame
+	v := mm.View()
+	row := -1
+	for i, ln := range strings.Split(v, "\n") {
+		if strings.Contains(stripANSI(ln), "themes") {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatal("themes row not visible in the menu frame")
+	}
+	m3, _ := mm.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 10, Y: row})
+	mm = m3.(model)
+	if mm.over.mode != overlayThemes {
+		t.Fatalf("clicking the themes row should open the theme menu, got mode %v (firstRow=%d maxRows=%d PAvail=%d vpH=%d clickRow=%d)\nframe:\n%s",
+			mm.over.mode, mm.menuFirstRow, mm.menuMaxRows, mm.menuPAvail, mm.vp.Height, row, v)
 	}
 }
 

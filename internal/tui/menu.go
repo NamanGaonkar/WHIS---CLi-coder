@@ -349,6 +349,31 @@ func (o *overlay) move(d int) bool {
 	return false
 }
 
+// bodyRows returns the rendered body height (rows inside the panel border)
+// for the current overlay. inRows is the textarea's row count, needed when
+// the key-entry form is embedded. Capped at 40 like every row budget.
+func (o *overlay) bodyRows(inRows int) int {
+	if o.mode == overlayNone {
+		return 0
+	}
+	n := 0
+	if o.mode == overlayHelp {
+		n = len(o.lines) + 4 // title + blank + lines + nav
+	} else {
+		n = 3 + len(o.items) // title + blank + items + nav line
+		if len(o.items) > 0 {
+			n++ // blank before the nav row
+		}
+	}
+	if o.mode == overlayKeyInput {
+		n += 2 + inRows // blank + blank + the embedded input view
+	}
+	if n < 1 {
+		n = 1
+	}
+	return clampInt(n, 1, 40)
+}
+
 // current returns the highlighted item.
 func (o *overlay) current() menuItem {
 	if o.cursor < 0 || o.cursor >= len(o.items) {

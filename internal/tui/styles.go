@@ -29,9 +29,10 @@ var (
 	diffAdd     lipgloss.Style
 	diffDel     lipgloss.Style
 	inputStyle  lipgloss.Style // border + FULL black backing (entire box)
-	barStyle    lipgloss.Style
-	blackFill   lipgloss.Style // full-width black filler row under the input
+	barStyle    lipgloss.Style // status bar: separate black band with own padding
+)
 
+var (
 	menuPanelStyle       lipgloss.Style
 	menuTitleStyle       lipgloss.Style
 	menuRowStyle         lipgloss.Style
@@ -107,8 +108,7 @@ func applyTheme(i int) {
 		BorderBackground(black).
 		Background(black).
 		Padding(0, 1)
-	barStyle = lipgloss.NewStyle().Foreground(amber).Background(deep).Padding(0, 1)
-	blackFill = lipgloss.NewStyle().Background(black)
+	barStyle = lipgloss.NewStyle().Foreground(amber).Background(black).Padding(0, 1)
 
 	menuPanelStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ember).Padding(1, 2)
 	menuTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0D0805")).Background(amber).Padding(0, 1)

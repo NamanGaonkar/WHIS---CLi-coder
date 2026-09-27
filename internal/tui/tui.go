@@ -74,6 +74,18 @@ type model struct {
 	// usageMerged latches once session.Totals() catches up with the last
 	// live-usage event, so tok never flickers back to a stale value.
 	usageMerged bool
+
+	// click geometry for overlay menus: frame row of the first item and the
+	// number of item rows actually visible. Computed in syncViewport (which
+	// runs after every Update), never in View (whose mutations are dumped).
+	menuFirstRow int
+	menuMaxRows  int
+	// overlay layout decision, made once per sync: rows shed from the bottom
+	// (0 = full layout, 1 = no pad/status, 2 = menu is the whole screen) and
+	// the panel body-row budget actually available.
+	menuShed     int
+	menuPAvail   int
+	menuHeadRows int // splash: rows of logo head above the menu panel (0/2)
 }
 
 // line is one transcript entry.
@@ -174,15 +186,62 @@ func (m *model) syncViewport() {
 	vw := clampInt(m.width-1, 10, m.width) // last col reserved for scrollbar
 	wasBottom := m.vp.AtBottom()
 	m.vp.Width = vw
-	if m.over.mode != overlayNone && !m.splash {
-		// overlay layout: half of what remains after fixed chrome (header+sep
-		// 2, vp sep 1, panel border+padding 4, sep 1, status 1). Below 3 rows
-		// the viewport drops out of the overlay screen entirely (0 = hidden).
+	if m.over.mode != overlayNone && !m.splash && m.over.mode == overlayHelp {
+		// help overlay: old half/half layout
 		h := (m.height - 9) / 2
 		if h < 3 {
 			h = 0
 		}
 		m.vp.Height = clampInt(h, 0, 40)
+		m.menuShed = 0
+		if h >= 3 {
+			m.menuPAvail = m.height - h - 9
+		} else {
+			m.menuPAvail = m.height - 8
+		}
+		m.menuPAvail = clampInt(m.menuPAvail, 1, 40)
+	} else if m.over.mode != overlayNone && !m.splash {
+		// item menus get the rows they NEED; the chat shrinks to fit
+		// (opencode-style: the menu is the screen, the transcript yields).
+		// No menu item is ever truncated on a normal window — last-row items
+		// like "themes" stay visible and clickable.
+		// Frame rows (vp shown): 1 header + 1 sep + vpH + 1 sep + (body+4)
+		// panel + 1 sep + (inRows+2) input + 1 blank + 1 status.
+		inRows := strings.Count(m.input.View(), "\n") + 1
+		bodyRows := m.over.bodyRows(inRows)
+		m.menuShed = 0
+		m.menuPAvail = bodyRows
+		if h := m.height - bodyRows - inRows - 12; h >= 3 {
+			m.vp.Height = clampInt(h, 3, 40)
+		} else if m.height >= bodyRows+inRows+10 {
+			m.vp.Height = 0 // chat hidden; full menu, nothing shed
+		} else if m.height >= bodyRows+inRows+8 {
+			m.vp.Height = 0
+			m.menuShed = 1 // drop pad + status rows (input stays)
+		} else if m.height >= bodyRows+4 {
+			m.vp.Height = 0
+			m.menuShed = 2 // drop the input box too: menu is the screen
+		} else {
+			m.vp.Height = 0
+			m.menuShed = 2
+			// header(1) + panel border/padding(4) stay; menu takes the rest
+			m.menuPAvail = clampInt(m.height-5, 1, 40)
+		}
+	} else if m.over.mode != overlayNone {
+		// splash + menu: head(0/2) + panel(body+4) + sep + input(inRows+2)
+		// + blank + status.
+		inRows := strings.Count(m.input.View(), "\n") + 1
+		headRows := 0
+		if m.height >= 20 && m.width >= 30 {
+			headRows = 2
+		}
+		p := m.height - inRows - 11 - headRows
+		if p < 1 && headRows > 0 {
+			headRows = 0
+			p = m.height - inRows - 11
+		}
+		m.menuHeadRows = headRows
+		m.menuPAvail = clampInt(p, 1, 40)
 	} else {
 		inRows := strings.Count(m.input.View(), "\n") + 1
 		// non-viewport rows: header 1 + sep 1 + input (inRows+2) + pad 1 + status 1
@@ -191,6 +250,29 @@ func (m *model) syncViewport() {
 	m.vp.SetContent(m.renderTranscript(vw))
 	if wasBottom {
 		m.vp.GotoBottom()
+	}
+
+	// click geometry for overlay menus. Frame ladder, session view:
+	//   header 1, sep 1, vp vpH, sep 1, border 1, padding 1, title 1,
+	//   blank 1, items... (vp hidden: no vp/sep rows). Splash: head rows
+	//   replace header/sep/vp. Visible rows mirror the panel budget minus
+	//   the fixed body rows (title + blank + blank + nav = 4).
+	m.menuFirstRow, m.menuMaxRows = 0, 0
+	if m.over.mode != overlayNone && m.over.mode != overlayHelp {
+		if m.splash {
+			m.menuFirstRow = m.menuHeadRows + 5
+		} else if m.vp.Height >= 3 {
+			m.menuFirstRow = m.vp.Height + 5 // empirically pinned by click tests
+		} else {
+			m.menuFirstRow = 5
+		}
+		m.menuMaxRows = m.menuPAvail - 4
+		if m.menuMaxRows < 0 {
+			m.menuMaxRows = 0
+		}
+		if m.menuMaxRows > len(m.over.items) {
+			m.menuMaxRows = len(m.over.items)
+		}
 	}
 }
 
@@ -335,6 +417,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickStatus()
 
 	case tea.MouseMsg:
+		// left click on an overlay menu row selects it (opencode parity)
+		if msg.Type == tea.MouseLeft && m.over.mode != overlayNone && m.over.mode != overlayHelp && m.menuMaxRows > 0 {
+			rel := msg.Y - m.menuFirstRow
+			if rel >= 0 && rel < m.menuMaxRows && rel < len(m.over.items) {
+				if !m.over.items[rel].disabled {
+					m.over.cursor = rel
+					return m.activateOverlay()
+				}
+			}
+			return m, nil
+		}
 		// wheel arrives as Type or Button depending on backend; check both.
 		if m.over.mode == overlayHelp {
 			switch {
@@ -569,6 +662,9 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 			return m, nil
 		case "/mode":
 			m.over.openModeMenu(m.agent.Status().Mode)
+			return m, nil
+		case "/themes":
+			m.over.openThemes(curTheme)
 			return m, nil
 		}
 		resp, err := m.agent.HandleSlash(cmd)
@@ -907,10 +1003,14 @@ func (m model) safeView() (s string) {
 	return m.sessionView()
 }
 
-// menuBlock renders the active overlay as a full-width panel (plus the key
-// input inside it when entering a key). maxRows caps the body so small
-// terminals get a scrollable-short menu instead of an overflowing frame.
-func (m model) menuBlock(maxRows int) string {
+// menuBlock renders the active overlay as a full-width panel. The body-row
+// budget was computed in syncViewport (menuPAvail); the cap here only guards
+// against a stale call path. Key-entry embeds the input view in the body.
+func (m model) menuBlock() string {
+	maxRows := m.menuPAvail
+	if maxRows < 1 {
+		maxRows = 1
+	}
 	body := m.over.view(m.width, maxRows)
 	if m.over.mode == overlayKeyInput {
 		body += "\n\n" + m.input.View()
@@ -918,7 +1018,7 @@ func (m model) menuBlock(maxRows int) string {
 	// border 2 cols + padding 4 cols = 6; inner width keeps total == m.width
 	inner := clampInt(m.width-6, 20, m.width)
 	rows := strings.Split(body, "\n")
-	if m.over.mode != overlayHelp && maxRows >= 1 && len(rows) > maxRows { // help windows itself
+	if m.over.mode != overlayHelp && maxRows >= 1 && len(rows) > maxRows {
 		// keep the title and as many items as fit; the note replaces the
 		// last kept row so the result is EXACTLY maxRows rows.
 		kept := append([]string{}, rows[:maxRows-1]...)
@@ -956,25 +1056,14 @@ func (m model) splashView() string {
 	hints := splashHintStyle.Render("/ commands · type a task and press enter · ctrl+c quit")
 
 	if m.over.mode != overlayNone {
-		// Exact assembly (lipgloss.Place pads but never clips, so the budget
-		// must be computed row by row): head rows + menu panel (menuRows+4
-		// for border+padding) + input (inRows+2) + status = height exactly.
-		inRows := strings.Count(m.input.View(), "\n") + 1
-		// budget: content(headRows+menuRows+4) + input(inRows+2) + pad + status
-		avail := clampInt(m.height-5-inRows, 3, m.height)
-		headRows := 0
+		// Splash + menu: syncViewport computed menuPAvail and menuHeadRows
+		// for this exact assembly (head + panel + sep + input + blank + status).
 		var head []string
-		if m.height >= 20 && m.width >= 30 {
+		if m.menuHeadRows > 0 {
 			head = []string{m.splashLogo(m.height < 26), ""}
-			headRows = 2
 		}
-		menuRows := avail - headRows - 4
-		if menuRows < 1 {
-			head, headRows = nil, 0 // tiny terminal: drop the logo entirely
-			menuRows = clampInt(m.height-9-inRows, 1, 40)
-		}
-		content := lipgloss.JoinVertical(lipgloss.Left, append(head, m.menuBlock(menuRows))...)
-		return content + "\n" + inpView(m) + "\n" + blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n" + m.statusBar()
+		content := lipgloss.JoinVertical(lipgloss.Left, append(head, m.menuBlock())...)
+		return content + "\n" + inpView(m) + "\n\n" + m.statusBar()
 	}
 
 	inRows := strings.Count(m.input.View(), "\n") + 1
@@ -990,7 +1079,7 @@ func (m model) splashView() string {
 		content = lipgloss.JoinVertical(lipgloss.Center, m.splashLogo(true), modelLine)
 	}
 	body := lipgloss.Place(m.width, avail, lipgloss.Center, lipgloss.Center, content)
-	return body + "\n" + inpView(m) + "\n" + blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n" + m.statusBar()
+	return body + "\n" + inpView(m) + "\n\n" + m.statusBar()
 }
 
 // splashLogo renders the full banner, or a one-line wordmark when compact.
@@ -1043,42 +1132,21 @@ func (m model) sessionView() string {
 
 	// overlay-open layout: the menu panel REPLACES the transcript and sits
 	// DIRECTLY ABOVE the input box — it never rises over or above the text
-	// box (user rule: menus stay down). Row budget (rows, not separators):
-	//   vp shown: 1 + H + (P+4) + 1 + (inRows+2) + 1 pad + 1 status
-	//   vp hidden: 1 + (P+4) + 1 + (inRows+2) + 1 pad + 1 status
-	// Cramped terminals shed rows instead of overflowing: first the input
-	// box + pad (the menu outranks the box), then the status row.
+	// box (user rule: menus stay down). syncViewport already decided the
+	// layout (menuShed) and the panel body budget (menuPAvail): the chat
+	// shrinks first so menus get their full height on normal windows.
 	if m.over.mode != overlayNone {
-		inRows := strings.Count(m.input.View(), "\n") + 1
-		panelMax := 0
 		if m.vp.Height >= 3 {
 			b.WriteString(vpWithScrollbar(m.vp) + "\n")
-			panelMax = m.height - m.vp.Height - 10 - inRows
-		} else {
-			panelMax = m.height - 10 - inRows
 		}
-		if panelMax < 6 {
-			// drop the input box and pad row, keep the status bar
-			if m.vp.Height >= 3 {
-				panelMax = m.height - m.vp.Height - 8
-			} else {
-				panelMax = m.height - 7
-			}
-			if panelMax < 6 {
-				// drop the status row too: panel takes the rest
-				if m.vp.Height >= 3 {
-					panelMax = m.height - m.vp.Height - 7
-				} else {
-					panelMax = m.height - 5
-				}
-				b.WriteString(m.menuBlock(clampInt(panelMax, 1, 40)))
-				return b.String()
-			}
-			b.WriteString(m.menuBlock(clampInt(panelMax, 1, 40)) + "\n" + m.statusBar())
-			return b.String()
+		switch m.menuShed {
+		case 0:
+			b.WriteString(m.menuBlock() + "\n" + inpView(m) + "\n\n" + m.statusBar())
+		case 1:
+			b.WriteString(m.menuBlock() + "\n" + inpView(m))
+		default:
+			b.WriteString(m.menuBlock())
 		}
-		b.WriteString(m.menuBlock(clampInt(panelMax, 1, 40)) + "\n" + inpView(m) + "\n" +
-			blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n" + m.statusBar())
 		return b.String()
 	}
 
@@ -1093,10 +1161,8 @@ func (m model) sessionView() string {
 	}
 	b.WriteString(inpView(m) + "\n")
 
-	// padding row under the text field: FULLY BLACK so the backing covers
-	// the gap between box and status bar too, then the telemetry bar.
-	b.WriteString(blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n")
-	b.WriteString(m.statusBar())
+	// one clean gap row between the input box and the status band
+	b.WriteString("\n" + m.statusBar())
 	return b.String()
 }
 
@@ -1139,10 +1205,9 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// statusBar is the simplified bottom bar: tokens used, run timer (while
-// working), and current mode — nothing else. Rendered as a fully black row
-// (blackFill) so the telemetry strip reads as one continuous black band
-// under the input box.
+// statusBar is the simplified bottom band: tokens, timer, mode. Rendered
+// as its own fully black padded strip (separate from the input box) with
+// uniform full width.
 func (m model) statusBar() string {
 	tok := m.status.In + m.status.Out
 	timer := ""
@@ -1151,9 +1216,7 @@ func (m model) statusBar() string {
 	}
 	mode := m.agent.Status().Mode
 	bar := fmt.Sprintf(" tok %s · mode %s%s", commify(tok), mode, timer)
-	// black backing over the entire row (content + padding cols), full width
-	return blackFill.Width(clampInt(m.width, 10, m.width)).MaxWidth(m.width).
-		Render(" " + bar)
+	return barStyle.Width(clampInt(m.width-2, 10, m.width)).MaxWidth(m.width).Render(bar)
 }
 
 // renderTranscript renders all transcript lines with styling. Assistant md
