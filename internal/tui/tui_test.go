@@ -350,6 +350,91 @@ func TestEscWalksBackMenuByMenu(t *testing.T) {
 	}
 }
 
+// TestMouseClickSelectsSplashMenu pins the STARTUP screen click geometry:
+// the row map must mirror the rows splashView actually renders above the
+// panel (banner + blank + border + padding + title + blank), so a click on
+// a rendered row activates that row. Regression: headRows reported 2 while
+// the real head was 7 rows, so every splash click landed on the wrong item.
+func TestMouseClickSelectsSplashMenu(t *testing.T) {
+	m := newTestModel(t) // WindowSizeMsg 100x30 already applied
+	if !m.splash {
+		t.Fatal("precondition: fresh model starts on the splash screen")
+	}
+	// open the slash menu the way a user does (key press -> Update ->
+	// syncViewport), so click geometry is freshly computed.
+	mm2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = mm2.(model)
+	if m.over.mode != overlaySlashMenu {
+		t.Fatal("precondition: slash menu open on splash")
+	}
+	v := m.View()
+	row := -1
+	for i, ln := range strings.Split(v, "\n") {
+		if strings.Contains(stripANSI(ln), "themes") {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("themes row not visible in splash frame\nframe:\n%s", v)
+	}
+	m2, _ := m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 10, Y: row})
+	mm := m2.(model)
+	if mm.over.mode != overlayThemes {
+		t.Fatalf("clicking themes on splash should open theme menu, got mode %v (firstRow=%d maxRows=%d headRows=%d clickRow=%d)\nframe:\n%s",
+			mm.over.mode, mm.menuFirstRow, mm.menuMaxRows, mm.menuHeadRows, row, v)
+	}
+}
+
+// TestMouseHoverMovesMenuCursor: moving the mouse over a menu row moves the
+// highlight there; hovering off the rows leaves the cursor alone.
+func TestMouseHoverMovesMenuCursor(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	mm := m2.(model)
+	if mm.over.mode != overlaySlashMenu {
+		t.Fatal("precondition: slash menu open")
+	}
+	// find the frame row of the themes item (it is the LAST slash item, so
+	// pin the cursor to the FIRST item first to guarantee a real move).
+	v := mm.View()
+	row := -1
+	for i, ln := range strings.Split(v, "\n") {
+		if strings.Contains(stripANSI(ln), "themes") {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("themes row not visible in the menu frame\nframe:\n%s", v)
+	}
+	mm.over.cursor = 0
+	if row == mm.menuFirstRow {
+		t.Fatalf("precondition: themes row must not be the first item row (firstRow=%d)", mm.menuFirstRow)
+	}
+	// hover: motion msg at that row
+	m3, _ := mm.Update(tea.MouseMsg{Type: tea.MouseMotion, X: 10, Y: row})
+	mm = m3.(model)
+	rel := row - mm.menuFirstRow
+	if mm.over.cursor != rel {
+		t.Fatalf("hover should move cursor to row %d (rel %d), got cursor=%d", row, rel, mm.over.cursor)
+	}
+	// hover outside the item band: cursor unchanged
+	cur := mm.over.cursor
+	m4, _ := mm.Update(tea.MouseMsg{Type: tea.MouseMotion, X: 10, Y: 0})
+	mm = m4.(model)
+	if mm.over.cursor != cur {
+		t.Fatal("hover off the item rows must not move the cursor")
+	}
+	// hover must NOT activate (only click does)
+	if mm.over.mode != overlaySlashMenu {
+		t.Fatalf("hover must not activate a row, got mode %v", mm.over.mode)
+	}
+}
+
 func TestApprovalFlow(t *testing.T) {
 	m := newTestModel(t)
 	m.splash = false // approvals only arrive mid-session, after splash is dismissed

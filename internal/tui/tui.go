@@ -91,6 +91,15 @@ type model struct {
 	// previous one, so esc walks BACK menu-by-menu (model list -> provider ->
 	// commands -> main) instead of dumping to the main screen.
 	stack []overlay
+
+	// ghost double-click debounce: bubbletea v1.2.4 also reports the button
+	// RELEASE as a MouseLeft a few ms after the press, so one physical click
+	// fires twice and the second hit lands on the NEW menu (e.g. click
+	// "themes" -> the theme menu picks an item by itself). Drop ANY click
+	// within 350ms of the previous one: humans never re-click that fast,
+	// ghost releases always are that fast. (Fixed upstream in bubbletea
+	// v1.3.0; revisit after any dependency bump.)
+	lastClick time.Time
 }
 
 // pushOverlay saves the current overlay for esc-to-return. No-op when no
@@ -245,17 +254,23 @@ func (m *model) syncViewport() {
 			m.menuPAvail = clampInt(m.height-5, 1, 40)
 		}
 	} else if m.over.mode != overlayNone {
-		// splash + menu: head(0/2) + panel(body+4) + sep + input(inRows+2)
-		// + blank + status.
+		// splash + menu, REAL frame accounting: head(headRows) + panel
+		// frame(border+padding=4) + body(menuPAvail: title+blank+items+nav)
+		// + blank 1 + input(inRows+2) + blank 1 + status 1.
 		inRows := strings.Count(m.input.View(), "\n") + 1
 		headRows := 0
 		if m.height >= 20 && m.width >= 30 {
+			// MUST mirror splashView's head exactly: full banner + blank at
+			// >= 26 rows, compact wordmark + blank below that.
 			headRows = 2
+			if m.height >= 26 {
+				headRows = len(banner) + 1
+			}
 		}
-		p := m.height - inRows - 11 - headRows
+		p := m.height - headRows - 4 - inRows - 4
 		if p < 1 && headRows > 0 {
 			headRows = 0
-			p = m.height - inRows - 11
+			p = m.height - 4 - inRows - 4
 		}
 		m.menuHeadRows = headRows
 		m.menuPAvail = clampInt(p, 1, 40)
@@ -277,7 +292,10 @@ func (m *model) syncViewport() {
 	m.menuFirstRow, m.menuMaxRows = 0, 0
 	if m.over.mode != overlayNone && m.over.mode != overlayHelp {
 		if m.splash {
-			m.menuFirstRow = m.menuHeadRows + 5
+			// head block (banner + blank) then panel frame: border, padding,
+			// title, blank -> first item. menuHeadRows now mirrors the rows
+			// splashView ACTUALLY renders above the panel.
+			m.menuFirstRow = m.menuHeadRows + 4
 		} else if m.vp.Height >= 3 {
 			m.menuFirstRow = m.vp.Height + 5 // empirically pinned by click tests
 		} else {
@@ -434,8 +452,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickStatus()
 
 	case tea.MouseMsg:
+		// hover over an overlay menu row moves the highlight there
+		// (opencode parity). Requires WithMouseAllMotion; motion arrives as
+		// Type MouseMotion with the cursor cell coordinates.
+		if msg.Type == tea.MouseMotion && m.over.mode != overlayNone && m.over.mode != overlayHelp && m.menuMaxRows > 0 {
+			rel := msg.Y - m.menuFirstRow
+			if rel >= 0 && rel < m.menuMaxRows && rel < len(m.over.items) && !m.over.items[rel].disabled && rel != m.over.cursor {
+				m.over.cursor = rel
+			}
+			return m, nil
+		}
 		// left click on an overlay menu row selects it (opencode parity)
 		if msg.Type == tea.MouseLeft && m.over.mode != overlayNone && m.over.mode != overlayHelp && m.menuMaxRows > 0 {
+			// ghost double-click: swallow any click within 350ms of the
+			// previous one (bubbletea reports the release as a second click).
+			if time.Since(m.lastClick) < 350*time.Millisecond {
+				return m, nil
+			}
+			m.lastClick = time.Now()
 			rel := msg.Y - m.menuFirstRow
 			if rel >= 0 && rel < m.menuMaxRows && rel < len(m.over.items) {
 				if !m.over.items[rel].disabled {
@@ -1109,6 +1143,8 @@ func (m model) splashView() string {
 		// for this exact assembly (head + panel + sep + input + blank + status).
 		var head []string
 		if m.menuHeadRows > 0 {
+			// FULL banner while a menu is open (user preference); the row
+			// math in syncViewport accounts for these exact rows.
 			head = []string{m.splashLogo(m.height < 26), ""}
 		}
 		content := lipgloss.JoinVertical(lipgloss.Left, append(head, m.menuBlock())...)

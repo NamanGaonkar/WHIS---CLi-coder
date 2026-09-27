@@ -113,9 +113,10 @@ func main() {
 	// clean up the browser engine (if the agent launched it) when the
 	// interactive session ends.
 	defer tool.CloseBrowser()
-	// WithMouseCellMotion enables terminal mouse reporting: without it the
+	// WithMouseAllMotion enables terminal mouse reporting INCLUDING hover
+	// motion (CellMotion only reports while a button is held): without it the
 	// TUI never receives wheel events (scrollbar stays dead).
-	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if _, err := p.Run(); err != nil {
 		fatal(err)
 	}
