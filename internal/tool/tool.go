@@ -101,6 +101,11 @@ type Definition struct {
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
+	// DeepSeek (and other strict OpenAI-compatible APIs) reject a null
+	// "required": it must ALWAYS be an array, even when empty.
+	if required == nil {
+		required = []string{}
+	}
 	return map[string]any{
 		"type":       "object",
 		"properties": props,
