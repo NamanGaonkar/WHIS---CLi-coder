@@ -1016,24 +1016,32 @@ func (m model) renderTranscript(vw int) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	// ANSI-aware hard clip to the viewport width, then rebuild one block.
-	clipped := make([]string, 0, len(parts)*3)
+	// ANSI-aware hard clip to the viewport width. Block structure (blank
+	// line between paragraphs/blocks) is preserved exactly.
+	clipped := make([]string, 0, len(parts))
 	for _, p := range parts {
+		var bl []string
 		for _, ln := range strings.Split(p, "\n") {
-			clipped = append(clipped, clipANSI(ln, vw))
+			bl = append(bl, clipANSI(ln, vw))
 		}
+		clipped = append(clipped, strings.Join(bl, "\n"))
 	}
-	return strings.Join(clipped, "\n")
+	return strings.Join(clipped, "\n\n")
 }
 
-// stripANSI removes all ANSI escape sequences from a line.
+// stripANSI removes all ANSI escape sequences from a line. CSI form:
+// ESC '[' params final — the '[' introducer (0x5B) sits inside the final
+// byte range, so it must be skipped explicitly or parsing ends early.
 func stripANSI(s string) string {
 	var b strings.Builder
 	inEsc := false
 	for _, r := range s {
 		if inEsc {
-			if r >= 0x40 && r <= 0x7e { // CSI final byte ends the sequence
-				inEsc = false
+			if r == '[' {
+				continue // introducer, keep scanning
+			}
+			if r >= 0x40 && r <= 0x7e {
+				inEsc = false // final byte ends the sequence
 			}
 			continue
 		}
@@ -1046,8 +1054,10 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
-// visWidth counts visible cells of a styled line (ESC-free rune count).
-func visWidth(s string) int { return len([]rune(stripANSI(s))) }
+// visWidth counts DISPLAY cells of a styled line: ANSI stripped, then
+// measured with lipgloss (handles wide CJK/box-drawing runes that a raw
+// rune count undercounts, which used to misplace the scrollbar).
+func visWidth(s string) int { return lipgloss.Width(stripANSI(s)) }
 
 // clipANSI truncates a styled line to w visible cells, copying escape
 // sequences verbatim and appending a hard reset so styles never bleed.
@@ -1061,6 +1071,9 @@ func clipANSI(s string, w int) string {
 	for _, r := range s {
 		if inEsc {
 			b.WriteRune(r)
+			if r == '[' {
+				continue // introducer, sequence continues
+			}
 			if r >= 0x40 && r <= 0x7e { // CSI final byte ends the sequence
 				inEsc = false
 			}
@@ -1071,11 +1084,12 @@ func clipANSI(s string, w int) string {
 			b.WriteRune(r)
 			continue
 		}
-		if used >= w {
+		rw := lipgloss.Width(string(r)) // true display width of the rune
+		if used+rw > w {
 			continue // drop overflow runes, keep trailing escapes
 		}
 		b.WriteRune(r)
-		used++
+		used += rw
 	}
 	b.WriteString("\x1b[0m")
 	return b.String()

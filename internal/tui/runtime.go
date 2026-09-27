@@ -189,9 +189,8 @@ func (ad *Adapter) ResumedTranscript() []TUILine {
 		case "user":
 			out = append(out, TUILine{Kind: "user", Body: m.Content})
 		case "assistant":
-			if m.Reasoning != "" {
-				out = append(out, TUILine{Kind: "plan", Body: m.Reasoning})
-			}
+			// reasoning blocks are NOT replayed: a resumed session would
+			// render a wall of boxed plan panes ("history tabs") in chat.
 			if m.Content != "" {
 				out = append(out, TUILine{Kind: "md", Body: m.Content})
 			}

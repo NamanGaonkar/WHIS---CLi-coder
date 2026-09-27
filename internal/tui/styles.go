@@ -21,7 +21,7 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(green)
 	errStyle    = lipgloss.NewStyle().Foreground(red).Bold(true)
 	warnStyle   = lipgloss.NewStyle().Foreground(amber)
-	planStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#C9B8A3")).Border(lipgloss.RoundedBorder()).BorderForeground(dimGray).Padding(0, 1)
+	planStyle   = lipgloss.NewStyle().Foreground(dimGray).Italic(true).Padding(0, 1)
 	toolStyle   = lipgloss.NewStyle().Foreground(ember)
 	diffAdd     = lipgloss.NewStyle().Foreground(green)
 	diffDel     = lipgloss.NewStyle().Foreground(red)

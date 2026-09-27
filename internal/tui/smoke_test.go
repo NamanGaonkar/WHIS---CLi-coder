@@ -230,6 +230,30 @@ func TestSmokeBusyGuard(t *testing.T) {
 	}
 }
 
+// TestSmokeClipWideRunesAndParagraphs pins the two regressions: the scrollbar
+// column must survive wide box-drawing runes, and paragraphs must stay
+// separated by blank lines in the transcript.
+func TestSmokeClipWideRunesAndParagraphs(t *testing.T) {
+	if w := visWidth("\x1b[38;5;252m" + strings.Repeat("█", 60) + "\x1b[0m"); w != 60 {
+		t.Fatalf("visWidth of 60 block runes = %d, want 60", w)
+	}
+	clipped := clipANSI("\x1b[38;5;252m"+strings.Repeat("█", 60)+"\x1b[0m", 40)
+	if got := visWidth(clipped); got != 40 {
+		t.Fatalf("clipANSI wide line = %d cells, want 40", got)
+	}
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	m.lines = append(m.lines, line{kind: "md", n: 1, body: "para one"}, line{kind: "md", n: 2, body: "para two"})
+	out := stripANSI(m.renderTranscript(79))
+	i1 := strings.Index(out, "para one")
+	i2 := strings.Index(out, "para two")
+	if i1 < 0 || i2 < 0 || !strings.Contains(out[i1:i2], "\n\n") {
+		t.Fatalf("paragraph blank line lost between the two paras")
+	}
+}
+
 // TestSmokeStaleChainIgnored feeds an event from an old run sequence and
 // asserts it cannot clear the new run's spinning state.
 func TestSmokeStaleChainIgnored(t *testing.T) {
