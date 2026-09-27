@@ -302,6 +302,54 @@ func TestSanitizeTextStripsBell(t *testing.T) {
 	}
 }
 
+func TestEscWalksBackMenuByMenu(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	// main -> commands -> provider -> model list: 3 levels deep
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = m2.(model)
+	if m.over.mode != overlaySlashMenu {
+		t.Fatal("precondition: commands menu open")
+	}
+	m.over.cursor = 0
+	for i, it := range m.over.items {
+		if it.value == "/model" {
+			m.over.cursor = i
+		}
+	}
+	m2, _ = m.activateOverlay()
+	m = m2.(model)
+	if m.over.mode != overlayProvider {
+		t.Fatalf("expected provider menu, got %v", m.over.mode)
+	}
+	m.over.cursor = 0
+	m2, _ = m.activateOverlay() // first provider -> model list
+	m = m2.(model)
+	if m.over.mode != overlayModel {
+		t.Fatalf("expected model menu, got %v", m.over.mode)
+	}
+	// esc #1: back to provider menu (NOT the main screen)
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = m2.(model)
+	if m.over.mode != overlayProvider {
+		t.Fatalf("esc #1 should return to provider menu, got %v", m.over.mode)
+	}
+	// esc #2: back to commands menu
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = m2.(model)
+	if m.over.mode != overlaySlashMenu {
+		t.Fatalf("esc #2 should return to commands menu, got %v", m.over.mode)
+	}
+	// esc #3: back to the main screen (stack empty)
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = m2.(model)
+	if m.over.mode != overlayNone {
+		t.Fatalf("esc #3 should close the last menu, got %v", m.over.mode)
+	}
+}
+
 func TestApprovalFlow(t *testing.T) {
 	m := newTestModel(t)
 	m.splash = false // approvals only arrive mid-session, after splash is dismissed

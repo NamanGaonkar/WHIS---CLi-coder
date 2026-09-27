@@ -86,6 +86,23 @@ type model struct {
 	menuShed     int
 	menuPAvail   int
 	menuHeadRows int // splash: rows of logo head above the menu panel (0/2)
+
+	// overlay back-stack: opening a menu from inside another menu pushes the
+	// previous one, so esc walks BACK menu-by-menu (model list -> provider ->
+	// commands -> main) instead of dumping to the main screen.
+	stack []overlay
+}
+
+// pushOverlay saves the current overlay for esc-to-return. No-op when no
+// menu is open (menus opened from the main screen are their own root).
+func (m *model) pushOverlay() {
+	if m.over.mode == overlayNone {
+		return
+	}
+	if len(m.stack) >= 8 {
+		m.stack = m.stack[1:]
+	}
+	m.stack = append(m.stack, m.over)
 }
 
 // line is one transcript entry.
@@ -585,6 +602,17 @@ func (m *model) answerApproval(ok bool) {
 func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		// walk BACK one menu level; only the root esc closes to the main screen
+		if n := len(m.stack); n > 0 {
+			m.over = m.stack[n-1]
+			m.stack = m.stack[:n-1]
+			if m.over.mode == overlayKeyInput {
+				m.input.Placeholder = "paste API key for " + m.over.provider + " (enter to save, esc to cancel)"
+			} else {
+				m.input.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
+			}
+			return m, m.input.Focus()
+		}
 		m.over = overlay{}
 		m.input.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
 		return m, m.input.Focus()
@@ -636,6 +664,7 @@ func (m model) saveKeyAndContinue() (tea.Model, tea.Cmd) {
 		m.agent.SaveKey(prov, v)
 		m.lines = append(m.lines, line{kind: "info", body: "key saved for " + prov})
 	}
+	m.pushOverlay()
 	m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
 	return m, m.input.Focus()
 }
@@ -646,27 +675,32 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 	switch m.over.mode {
 	case overlaySlashMenu:
 		cmd := it.value
-		m.over = overlay{}
 		m.input.SetValue("")
 		switch cmd {
 		case "@help":
+			m.pushOverlay()
 			if resp, err := m.agent.HandleSlash("/help"); err == nil && resp != "" {
 				m.over.openHelp(resp)
 			}
 			return m, nil
 		case "/model", "/provider":
+			m.pushOverlay()
 			m.over.openProviderMenu(m.agent.Keys())
 			return m, nil
 		case "/sessions":
+			m.pushOverlay()
 			m.over.openSessions(m.agent.Workspace())
 			return m, nil
 		case "/mode":
+			m.pushOverlay()
 			m.over.openModeMenu(m.agent.Status().Mode)
 			return m, nil
 		case "/themes":
+			m.pushOverlay()
 			m.over.openThemes(curTheme)
 			return m, nil
 		}
+		m.over = overlay{}
 		resp, err := m.agent.HandleSlash(cmd)
 		if err != nil {
 			m.lines = append(m.lines, line{kind: "error", body: err.Error()})
@@ -681,21 +715,25 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		}
 		// "edit / re-enter a provider key" row: switch to the key editor
 		if it.value == "@editkey" {
+			m.pushOverlay()
 			m.over.openProviderEditMenu(m.agent.Keys())
 			return m, nil
 		}
 		// key editor rows: "@set:<prov>" jumps straight into the key form
 		if after, found := strings.CutPrefix(it.value, "@set:"); found {
+			m.pushOverlay()
 			m.over.openKeyInput(after)
 			m.input.Placeholder = "paste NEW API key for " + after + " (enter to save, esc to cancel)"
 			return m, m.input.Focus()
 		}
 		prov := it.value
 		if pNeedsKey(prov) && m.agent.Keys()[prov] == "" {
+			m.pushOverlay()
 			m.over.openKeyInput(prov)
 			m.input.Placeholder = "paste API key for " + prov + " (enter to save, esc to cancel)"
 			return m, m.input.Focus()
 		}
+		m.pushOverlay()
 		m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
 		return m, nil
 
@@ -703,6 +741,7 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		switch it.value {
 		case "@key":
 			prov := m.over.provider
+			m.pushOverlay()
 			m.over.openKeyInput(prov)
 			m.input.Placeholder = "paste API key for " + prov + " (enter to save, esc to cancel)"
 			return m, m.input.Focus()
