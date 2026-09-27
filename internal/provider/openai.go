@@ -110,8 +110,8 @@ type oaStreamRequest struct {
 	} `json:"stream_options,omitempty"`
 	// DeepSeek V4 reasoning/effort control: keeps billed output lean by
 	// capping thinking budget per run kind (reasoning tokens bill as output).
-	Thinking *oaThinking       `json:"thinking,omitempty"`
-	Effort   string            `json:"reasoning_effort,omitempty"`
+	Thinking *oaThinking `json:"thinking,omitempty"`
+	Effort   string      `json:"reasoning_effort,omitempty"`
 	// OpenAI-style output cap.
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
