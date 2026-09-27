@@ -108,6 +108,17 @@ type oaStreamRequest struct {
 	StreamOpt *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options,omitempty"`
+	// DeepSeek V4 reasoning/effort control: keeps billed output lean by
+	// capping thinking budget per run kind (reasoning tokens bill as output).
+	Thinking *oaThinking       `json:"thinking,omitempty"`
+	Effort   string            `json:"reasoning_effort,omitempty"`
+	// OpenAI-style output cap.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+}
+
+// oaThinking toggles DeepSeek reasoning; Effort picks the level.
+type oaThinking struct {
+	Type string `json:"type"`
 }
 
 func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Message, tools []Tool) (Stream, error) {
@@ -125,6 +136,15 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 	req.StreamOpt = &struct {
 		IncludeUsage bool `json:"include_usage"`
 	}{IncludeUsage: true}
+	// Token-consumption control: cap billed output and reasoning effort.
+	// Tools-only turns (the model is just picking the next action) do not
+	// need deep thinking; final-answer turns may still think when the model
+	// supports it. Unknown extra fields are ignored by lenient servers.
+	req.MaxOutputTokens = 4096
+	if strings.Contains(wire, "deepseek") {
+		req.Thinking = &oaThinking{Type: "enabled"}
+		req.Effort = "low"
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
