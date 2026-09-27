@@ -198,19 +198,19 @@ func (e *Env) RunCommand(command string) Result {
 	if e.OnSnapshot != nil {
 		_ = e.OnSnapshot()
 	}
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", command)
-	} else {
-		cmd = exec.Command("sh", "-c", command)
-	}
-	cmd.Dir = e.Root
-	// security: hard timeout so runaway processes cannot hang the agent
+	// security: hard timeout so runaway processes cannot hang the agent.
+	// The command MUST be created with exec.CommandContext (Go requires it
+	// when Cancel is set — plain exec.Command + Cancel fails every run with
+	// "command with a non-nil Cancel was not created with CommandContext").
 	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
 	defer cancel()
-	cmd.Cancel = func() error { // Go 1.20+: kills the whole process tree
-		return cmd.Process.Kill()
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
+	cmd.Dir = e.Root
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return Result{OK: false, Output: capLines(string(out), MaxCommandOutput) +
