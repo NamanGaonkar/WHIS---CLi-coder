@@ -1,6 +1,6 @@
 # build artifacts
-whis
-whis.exe
+/whis
+/whis.exe
 dist/
 *.sha256
 
