@@ -759,7 +759,7 @@ func (m model) splashView() string {
 	bannerBlock := lipgloss.JoinVertical(lipgloss.Center, rows...)
 
 	tag := splashTagStyle.Render("T O K E N - S U R G I C A L   C O D I N G   A G E N T")
-	ver := splashHintStyle.Render("v" + Version + " · byo-key · local or remote")
+	ver := splashHintStyle.Render("v" + Version + " · made by Naman Gaonkar")
 
 	modelLine := splashHintStyle.Render("press / to pick a provider & model")
 	if m.agent.Ready() {
