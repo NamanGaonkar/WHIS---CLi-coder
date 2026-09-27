@@ -158,6 +158,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
+		// keyboard scrolling of the transcript (chat history)
+		if m.over.mode == overlayNone {
+			switch msg.String() {
+			case "pgup", "shift+up":
+				m.vp.LineUp(m.vp.Height / 2)
+				return m, nil
+			case "pgdown", "shift+down":
+				m.vp.LineDown(m.vp.Height / 2)
+				return m, nil
+			case "end":
+				m.vp.GotoBottom()
+				return m, nil
+			}
+		}
 
 		// overlays capture keys first
 		if m.over.mode != overlayNone {
@@ -197,10 +211,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.planOpen = !m.planOpen
 				return m, nil
 			}
-			// expand/collapse the last code block — only when the user is
-			// NOT typing (input empty), so c/t stay typeable in the editor.
-			if (msg.String() == "c" || msg.String() == "t") && strings.TrimSpace(m.input.Value()) == "" {
-				m.toggleCode(msg.String() == "c")
+			if msg.String() == "ctrl+o" {
+				m.toggleCodeBlocks()
 				return m, nil
 			}
 			if msg.String() == "enter" {
@@ -217,6 +229,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq == m.runSeq {
 			m.status.Spinning = false
 			m.endRun()
+			// force one full repaint so the finished reply is ALWAYS visible
+			// even when the renderer skips the final frame.
+			m.flushStream()
+			return m, tea.ClearScreen
 		}
 		m.flushStream()
 		return m, nil
@@ -348,12 +364,13 @@ func (m *model) beginRun() {
 	m.status.Elapsed = "0s"
 }
 
-// endRun freezes the timer at its last value (done banner + status bar).
+// endRun freezes the timer at its last value and clears the spinning state.
 func (m *model) endRun() {
 	if m.runActive {
 		m.runLast = time.Since(m.runStart)
 	}
 	m.runActive = false
+	m.status.Spinning = false
 	m.status.Elapsed = fmtDur(m.runLast)
 }
 
@@ -737,11 +754,20 @@ func (m model) safeView() (s string) {
 }
 
 // menuBlock renders the active overlay as a full-width panel (plus the key
-// input inside it when entering a key).
-func (m model) menuBlock() string {
+// input inside it when entering a key). maxRows caps the body so small
+// terminals get a scrollable-short menu instead of an overflowing frame.
+func (m model) menuBlock(maxRows int) string {
 	body := m.over.view(m.width)
 	if m.over.mode == overlayKeyInput {
 		body += "\n\n" + m.input.View()
+	}
+	rows := strings.Split(body, "\n")
+	if maxRows >= 1 && len(rows) > maxRows {
+		// keep the title and as many items as fit; the note replaces the
+		// last kept row so the result is EXACTLY maxRows rows.
+		kept := append([]string{}, rows[:maxRows-1]...)
+		kept = append(kept, fmt.Sprintf("... (%d more rows — enlarge terminal)", len(rows)-maxRows+1))
+		body = strings.Join(kept, "\n")
 	}
 	// border 2 cols + padding 4 cols = 6; inner width keeps total == m.width
 	inner := clampInt(m.width-6, 20, m.width)
@@ -768,21 +794,61 @@ func (m model) splashView() string {
 	hints := splashHintStyle.Render("/ commands · type a task and press enter · ctrl+c quit")
 
 	if m.over.mode != overlayNone {
-		content := lipgloss.JoinVertical(lipgloss.Left, bannerBlock, "", tag, "", m.menuBlock())
-		bodyH := clampInt(m.height-3, 3, m.height)
-		body := lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Top, content)
-		return body + "\n" + inpView(m) + "\n" + m.statusBar()
+		// Exact assembly (lipgloss.Place pads but never clips, so the budget
+		// must be computed row by row): head rows + menu panel (menuRows+4
+		// for border+padding) + input (inRows+2) + status = height exactly.
+		inRows := strings.Count(m.input.View(), "\n") + 1
+		avail := clampInt(m.height-6-inRows, 3, m.height) // -1: padding row under input
+		headRows := 0
+		var head []string
+		if m.height >= 20 && m.width >= 30 {
+			head = []string{m.splashLogo(m.height < 26), ""}
+			headRows = 2
+		}
+		menuRows := avail - headRows - 4
+		if menuRows < 1 {
+			head, headRows = nil, 0 // tiny terminal: drop the logo entirely
+			menuRows = clampInt(avail-4, 1, 40)
+		}
+		content := lipgloss.JoinVertical(lipgloss.Left, append(head, m.menuBlock(menuRows))...)
+		return content + "\n" + inpView(m) + "\n\n" + m.statusBar()
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", tag, ver, "", modelLine, hints)
-	bodyH := clampInt(m.height-4, 3, m.height)
-	body := lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, content)
-	return body + "\n" + inpView(m) + "\n" + m.statusBar()
+	inRows := strings.Count(m.input.View(), "\n") + 1
+	avail := clampInt(m.height-6-inRows, 3, m.height) // -1: padding row under input
+	var content string
+	switch {
+	case avail >= 11 && m.width >= 58:
+		content = lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", tag, ver, "", modelLine, hints)
+	case avail >= 11:
+		// narrow: drop the 52-col tagline and the hint row
+		content = lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", ver, "", modelLine)
+	default:
+		content = lipgloss.JoinVertical(lipgloss.Center, m.splashLogo(true), modelLine)
+	}
+	body := lipgloss.Place(m.width, avail, lipgloss.Center, lipgloss.Center, content)
+	return body + "\n" + inpView(m) + "\n\n" + m.statusBar()
 }
 
-// inpView renders the full-width input box (border included in width math).
+// splashLogo renders the full banner, or a one-line wordmark when compact.
+func (m model) splashLogo(compact bool) string {
+	if !compact {
+		var rows []string
+		for i, row := range banner {
+			rows = append(rows, lipgloss.NewStyle().Bold(true).
+				Foreground(lipgloss.Color(bannerColors[i%len(bannerColors)])).Render(row))
+		}
+		return lipgloss.JoinVertical(lipgloss.Center, rows...)
+	}
+	return lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.Color(bannerColors[3])).Render("W  H  I  S")
+}
+
+// inpView renders the full-width input box. lipgloss Width() is the CONTENT
+// width: border (2) + padding (2) add on top, so content = width-4 makes the
+// box exactly terminal-width, equal to the menu panel and status bar.
 func inpView(m model) string {
-	return inputStyle.Width(clampInt(m.width-2, 20, m.width)).Render(m.input.View())
+	return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(m.input.View())
 }
 
 // sessionView is the main layout after the first prompt.
@@ -800,21 +866,49 @@ func (m model) sessionView() string {
 	if m.status.Spinning {
 		right += m.status.Elapsed + " "
 	}
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
+	// render the ribbon as ONE styled row: Width(content) + 2 padding cols
+	// = exactly terminal width. Two separate renders double-counted padding.
+	fill := m.width - 4 - lipgloss.Width(left) - lipgloss.Width(right)
+	if fill < 1 {
+		fill = 1
 	}
-	b.WriteString(headerStyle.Render(left) + strings.Repeat(" ", gap) + headerStyle.Render(right) + "\n")
+	ribbon := left + strings.Repeat(" ", fill) + right
+	b.WriteString(headerStyle.Width(clampInt(m.width-2, 10, m.width)).MaxWidth(m.width).Render(ribbon) + "\n")
 
-	// transcript viewport: auto-scroll to the newest output on every render
-	// so long agent runs never look "stuck" on old content. Height flexes
-	// with the input box so a wrapped, growing textarea never overflows.
-	vw := clampInt(m.width-2, 10, m.width) // 2 cols reserved for the scrollbar
+	// viewport width is shared by every layout branch (scrollbar column)
+	vw := clampInt(m.width-1, 10, m.width)
+	// wasBottom is read BEFORE the content swap: if the user was at the
+	// bottom of the OLD content, follow the new output; if they scrolled
+	// up to read history, leave the view alone.
+	wasBottom := m.vp.AtBottom()
+
+	// overlay-open layout first: the menu panel REPLACES the transcript
+	// (viewport shrinks to what is left, or drops out on tiny terminals).
+	// Budget: header 1 + sep 1 + panel (maxRows+4) + sep + status 1.
+	if m.over.mode != overlayNone {
+		panelMax := clampInt(m.height-8, 1, 40)
+		if vpH := m.height - panelMax - 8; vpH >= 3 {
+			m.vp.Height = vpH
+			m.vp.SetContent(m.renderTranscript(vw))
+			if wasBottom {
+				m.vp.GotoBottom()
+			}
+			b.WriteString(vpWithScrollbar(m.vp) + "\n")
+		}
+		b.WriteString(m.menuBlock(panelMax) + "\n" + m.statusBar())
+		return b.String()
+	}
+
+	// transcript viewport with follow-lock (see wasBottom above).
 	m.vp.Width = vw
 	inRows := strings.Count(m.input.View(), "\n") + 1
+	// non-viewport rows: header 1 + vp separator 1 + input (inRows+2 border)
+	// + padding row 1 + status 1 = inRows + 6.
 	m.vp.Height = clampInt(m.height-6-inRows, 3, m.height)
 	m.vp.SetContent(m.renderTranscript(vw))
-	m.vp.GotoBottom()
+	if wasBottom {
+		m.vp.GotoBottom()
+	}
 	b.WriteString(vpWithScrollbar(m.vp) + "\n")
 
 	// approval modal
@@ -823,47 +917,41 @@ func (m model) sessionView() string {
 			dimStyle.Render("   [y] apply · [n] skip · [esc] cancel")
 		b.WriteString(mod + "\n")
 	}
-
-	// full-width overlay panel; header stays visible above it
-	if m.over.mode != overlayNone {
-		b.WriteString(m.menuBlock() + "\n")
-		return b.String() + m.statusBar()
-	}
 	b.WriteString(inpView(m) + "\n")
 
-	// simplified telemetry bar pinned right under the input
-	b.WriteString(m.statusBar())
+	// padding row under the text field, then the telemetry bar
+	b.WriteString("\n" + m.statusBar())
 	return b.String()
 }
 
-// vpWithScrollbar renders the viewport with an ember scrollbar column.
+// vpWithScrollbar renders the viewport at exactly one extra column so the
+// chat box is the same width as every other box. The last column carries the
+// ember scrollbar when content overflows, or a blank column when it fits.
 func vpWithScrollbar(vp viewport.Model) string {
 	view := vp.View()
 	total := maxInt(1, vp.TotalLineCount())
 	visible := maxInt(1, vp.Height)
-	if total <= visible {
-		return view // content fits: no scrollbar
-	}
+	overflows := total > visible
 	track := vp.Height
 	thumb := maxInt(1, track*visible/total)
 	maxOff := maxInt(1, total-visible)
-	pos := 0
-	if maxOff > 0 {
-		pos = vp.YOffset * (track - thumb) / maxOff
-	}
-	if pos > track-thumb {
-		pos = track - thumb
-	}
+	pos := clampInt(vp.YOffset*(track-thumb)/maxOff, 0, track-thumb)
 	lines := strings.Split(view, "\n")
 	for i := range lines {
-		if i >= track {
-			break
+		if w := visWidth(lines[i]); w > vp.Width {
+			lines[i] = clipANSI(lines[i], vp.Width)
+		} else if w < vp.Width {
+			lines[i] += strings.Repeat(" ", vp.Width-w)
 		}
-		bar := scrollTrackStyle.Render("│")
+		if !overflows {
+			lines[i] += " "
+			continue
+		}
 		if i >= pos && i < pos+thumb {
-			bar = scrollThumbStyle.Render("│")
+			lines[i] += scrollThumbStyle.Render("▐")
+		} else {
+			lines[i] += scrollTrackStyle.Render("│")
 		}
-		lines[i] = lines[i] + bar
 	}
 	return strings.Join(lines, "\n")
 }
@@ -885,11 +973,14 @@ func (m model) statusBar() string {
 	}
 	mode := m.agent.Status().Mode
 	bar := fmt.Sprintf(" tok %s · mode %s%s", commify(tok), mode, timer)
-	return barStyle.Width(m.width - 1).MaxWidth(m.width - 1).Render(bar)
+	// width-2 content + 2 padding = full terminal width, matching every box
+	return barStyle.Width(clampInt(m.width-2, 10, m.width)).MaxWidth(m.width).Render(bar)
 }
 
 // renderTranscript renders all transcript lines with styling. Assistant md
-// lines render with code blocks collapsed (c expands the targeted block).
+// lines render with code blocks collapsed (ctrl+o expands them). Every line
+// is hard-clipped to vw: glamour/goldmark ignore width on narrow terminals
+// and emit wide styled lines that would wrap and corrupt the layout.
 func (m model) renderTranscript(vw int) string {
 	var parts []string
 	for _, l := range m.lines {
@@ -925,7 +1016,69 @@ func (m model) renderTranscript(vw int) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return strings.Join(parts, "\n\n")
+	// ANSI-aware hard clip to the viewport width, then rebuild one block.
+	clipped := make([]string, 0, len(parts)*3)
+	for _, p := range parts {
+		for _, ln := range strings.Split(p, "\n") {
+			clipped = append(clipped, clipANSI(ln, vw))
+		}
+	}
+	return strings.Join(clipped, "\n")
+}
+
+// stripANSI removes all ANSI escape sequences from a line.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if r >= 0x40 && r <= 0x7e { // CSI final byte ends the sequence
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// visWidth counts visible cells of a styled line (ESC-free rune count).
+func visWidth(s string) int { return len([]rune(stripANSI(s))) }
+
+// clipANSI truncates a styled line to w visible cells, copying escape
+// sequences verbatim and appending a hard reset so styles never bleed.
+func clipANSI(s string, w int) string {
+	if visWidth(s) <= w {
+		return s
+	}
+	var b strings.Builder
+	used := 0
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			b.WriteRune(r)
+			if r >= 0x40 && r <= 0x7e { // CSI final byte ends the sequence
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			b.WriteRune(r)
+			continue
+		}
+		if used >= w {
+			continue // drop overflow runes, keep trailing escapes
+		}
+		b.WriteRune(r)
+		used++
+	}
+	b.WriteString("\x1b[0m")
+	return b.String()
 }
 
 // codeOpenFor returns the expansion map for an md line (-1 = streaming buf).
@@ -939,12 +1092,12 @@ func (m model) codeOpenFor(n int) map[int]bool {
 	return out
 }
 
-// toggleCode flips expansion of the code segment nearest the last output.
-func (m *model) toggleCode(open bool) {
+// toggleCodeBlocks expands every code block in the newest reply, or collapses
+// them if any is open. Bound to ctrl+o so plain letters stay typeable.
+func (m *model) toggleCodeBlocks() {
 	if m.codeOpen == nil {
 		m.codeOpen = map[int]bool{}
 	}
-	// find the last md line
 	target := -1
 	for i := len(m.lines) - 1; i >= 0; i-- {
 		if m.lines[i].kind == "md" {
@@ -957,16 +1110,20 @@ func (m *model) toggleCode(open bool) {
 	}
 	segs := splitFences(m.lines[len(m.lines)-1].body)
 	codeCount := 0
-	for _, s := range segs {
+	anyOpen := false
+	for i, s := range segs {
 		if s.code {
 			codeCount++
+			if m.codeOpen[(target+1)*1000+i] {
+				anyOpen = true
+			}
 		}
 	}
 	if codeCount == 0 {
 		return
 	}
 	for i := 0; i < codeCount; i++ {
-		m.codeOpen[(target+1)*1000+i] = open
+		m.codeOpen[(target+1)*1000+i] = !anyOpen
 	}
 }
 

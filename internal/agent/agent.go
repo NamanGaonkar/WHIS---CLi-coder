@@ -192,6 +192,7 @@ func (a *Agent) allowedTools() []provider.Tool {
 	readOnly := map[string]bool{
 		"locate_symbol": true, "read_range": true,
 		"search_codebase": true, "list_tree": true,
+		"web_fetch": true,
 	}
 	var out []provider.Tool
 	for _, d := range tool.Manifest() {

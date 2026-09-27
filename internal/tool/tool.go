@@ -123,6 +123,9 @@ func Manifest() []Definition {
 		{"list_tree", "List workspace files/dirs up to depth 4, skipping .git, node_modules, .venv and binaries.", obj(map[string]any{
 			"path": str("optional subdirectory to start from"),
 		})},
+		{"web_fetch", "Fetch a public web page or API endpoint and return readable text (HTML stripped). Use for docs, lookups, and internet research.", obj(map[string]any{
+			"url": str("http/https URL to fetch"),
+		}, "url")},
 	}
 }
 
@@ -151,6 +154,8 @@ func (e *Env) Execute(name string, args json.RawMessage) Result {
 		return e.SearchCodebase(gs("pattern"), gs("glob"))
 	case "list_tree":
 		return e.ListTree(gs("path"))
+	case "web_fetch":
+		return e.WebFetch(gs("url"))
 	}
 	return Result{Output: "unknown tool: " + name}
 }

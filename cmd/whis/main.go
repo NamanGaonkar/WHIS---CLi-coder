@@ -100,7 +100,9 @@ func main() {
 	}
 	adapter := tui.NewAdapter(a, keys)
 	adapter.Cfg = cfg
-	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen())
+	// WithMouseCellMotion enables terminal mouse reporting: without it the
+	// TUI never receives wheel events (scrollbar stays dead).
+	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fatal(err)
 	}
