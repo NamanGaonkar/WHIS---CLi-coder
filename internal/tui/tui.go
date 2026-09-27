@@ -512,9 +512,9 @@ func (m *model) submitPrompt(splash bool) tea.Cmd {
 		return nil
 	}
 	m.input.SetValue("")
-	m.lines = append(m.lines, line{kind: "user", body: v})
+	m.lines = append(m.lines, line{kind: "user", body: sanitizeText(v)})
 	m.beginRun()
-	return m.startPrompt(v)
+	return m.startPrompt(sanitizeText(v))
 }
 
 // runSlash executes a slash command typed into the box (menu commands open
@@ -679,6 +679,17 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		if it.value == "" {
 			return m, nil
 		}
+		// "edit / re-enter a provider key" row: switch to the key editor
+		if it.value == "@editkey" {
+			m.over.openProviderEditMenu(m.agent.Keys())
+			return m, nil
+		}
+		// key editor rows: "@set:<prov>" jumps straight into the key form
+		if after, found := strings.CutPrefix(it.value, "@set:"); found {
+			m.over.openKeyInput(after)
+			m.input.Placeholder = "paste NEW API key for " + after + " (enter to save, esc to cancel)"
+			return m, m.input.Focus()
+		}
 		prov := it.value
 		if pNeedsKey(prov) && m.agent.Keys()[prov] == "" {
 			m.over.openKeyInput(prov)
@@ -758,7 +769,7 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		m.planBuf = ""
 		m.splash = false
 		for _, tl := range m.agent.ResumedTranscript() {
-			m.lines = append(m.lines, line{kind: tl.Kind, body: tl.Body})
+			m.lines = append(m.lines, line{kind: tl.Kind, body: sanitizeText(tl.Body)})
 		}
 		if resp := m.agent.ResumeInfo(); resp != "" {
 			m.lines = append(m.lines, line{kind: "info", body: resp})
@@ -822,15 +833,15 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 	ev := sc.ev
 	switch ev.Type {
 	case "reasoning":
-		m.planBuf += ev.Text
+		m.planBuf += sanitizeText(ev.Text)
 	case "text":
-		m.streamBuf += ev.Text
+		m.streamBuf += sanitizeText(ev.Text)
 	case "plan":
 		m.planBuf = ev.Text
 		m.flushStream()
 	case "notice":
 		m.flushStream()
-		m.lines = append(m.lines, line{kind: "info", body: ev.Text})
+		m.lines = append(m.lines, line{kind: "info", body: sanitizeText(ev.Text)})
 		if strings.HasPrefix(ev.Text, "thinking · turn ") {
 			if n, err := strconv.Atoi(strings.TrimPrefix(ev.Text, "thinking · turn ")); err == nil {
 				m.turnNum = n
@@ -850,9 +861,9 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		}
 	case "tool_start":
 		m.flushStream()
-		m.lines = append(m.lines, line{kind: "tool", body: ev.ToolName + " " + ev.ToolArgs})
+		m.lines = append(m.lines, line{kind: "tool", body: sanitizeText(ev.ToolName + " " + ev.ToolArgs)})
 	case "tool_end":
-		m.lines = append(m.lines, line{kind: "toolout", body: ev.ToolOutput})
+		m.lines = append(m.lines, line{kind: "toolout", body: sanitizeText(ev.ToolOutput)})
 	case "approval":
 		m.flushStream()
 		m.approval = ev.Text
@@ -874,7 +885,7 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.endRun()
 		m.status.Spinning = false
-		m.lines = append(m.lines, line{kind: "error", body: ev.Text})
+		m.lines = append(m.lines, line{kind: "error", body: sanitizeText(ev.Text)})
 	}
 	m.syncStatus()
 	if sc.first {
@@ -1047,7 +1058,6 @@ func (m model) splashView() string {
 	bannerBlock := lipgloss.JoinVertical(lipgloss.Center, rows...)
 
 	tag := splashTagStyle.Render("T O K E N - S U R G I C A L   C O D I N G   A G E N T")
-	ver := splashHintStyle.Render("v" + Version + " · made by Naman Gaonkar")
 
 	modelLine := splashHintStyle.Render("press / to pick a provider & model")
 	if m.agent.Ready() {
@@ -1071,10 +1081,10 @@ func (m model) splashView() string {
 	var content string
 	switch {
 	case avail >= 11 && m.width >= 58:
-		content = lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", tag, ver, "", modelLine, hints)
+		content = lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", tag, "", modelLine, hints)
 	case avail >= 11:
 		// narrow: drop the 52-col tagline and the hint row
-		content = lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", ver, "", modelLine)
+		content = lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", modelLine)
 	default:
 		content = lipgloss.JoinVertical(lipgloss.Center, m.splashLogo(true), modelLine)
 	}
@@ -1205,17 +1215,16 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// statusBar is the simplified bottom band: tokens, timer, mode. Rendered
-// as its own fully black padded strip (separate from the input box) with
-// uniform full width.
+// statusBar is the simplified bottom band: mode + run timer while working.
+// Rendered as its own fully black padded strip (separate from the input box)
+// with uniform full width. Token counters were removed by request.
 func (m model) statusBar() string {
-	tok := m.status.In + m.status.Out
 	timer := ""
 	if m.status.Spinning {
 		timer = " · " + m.status.Elapsed + " · esc stops"
 	}
 	mode := m.agent.Status().Mode
-	bar := fmt.Sprintf(" tok %s · mode %s%s", commify(tok), mode, timer)
+	bar := fmt.Sprintf(" mode %s%s", mode, timer)
 	return barStyle.Width(clampInt(m.width-2, 10, m.width)).MaxWidth(m.width).Render(bar)
 }
 
@@ -1300,6 +1309,33 @@ func stripANSI(s string) string {
 // measured with lipgloss (handles wide CJK/box-drawing runes that a raw
 // rune count undercounts, which used to misplace the scrollbar).
 func visWidth(s string) int { return lipgloss.Width(stripANSI(s)) }
+
+// sanitizeText strips C0 control characters (except \n) from text entering
+// the transcript. BEL (0x07) makes Windows terminals beep mid-reply; other
+// control bytes (carriage returns from fetched pages, escapes) corrupt the
+// frame. Tabs expand so column math stays honest.
+func sanitizeText(s string) string {
+	dirty := false
+	for _, r := range s {
+		if r < 0x20 && r != '\n' {
+			dirty = true
+			break
+		}
+	}
+	if !dirty {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\t':
+			b.WriteString("    ")
+		case r >= 0x20:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // clipANSI truncates a styled line to w visible cells, copying escape
 // sequences verbatim and appending a hard reset so styles never bleed.

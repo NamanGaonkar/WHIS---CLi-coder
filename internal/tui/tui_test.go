@@ -144,10 +144,11 @@ func TestMenuStaysBelowInput(t *testing.T) {
 	if menuAt >= inputAt {
 		t.Fatalf("menu (row %d) must sit BELOW the input box (row %d)\n%s", menuAt, inputAt, v)
 	}
-	// input box stays pinned: bottom rows are pad + status, not menu
+	// input box stays pinned: the last row is the status band (mode only —
+	// token counters were removed by request)
 	last := strings.TrimSpace(lines[len(lines)-1])
-	if !strings.Contains(last, "tok") {
-		t.Fatalf("status bar must be the last row, got %q", last)
+	if !strings.Contains(last, "mode") {
+		t.Fatalf("status band must be the last row, got %q", last)
 	}
 }
 

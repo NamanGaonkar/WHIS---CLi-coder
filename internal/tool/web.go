@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"compress/gzip"
 	"fmt"
 	"html"
 	"io"
@@ -48,7 +49,9 @@ func webHeaders(u *url.URL) http.Header {
 	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 	h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
 	h.Set("Accept-Language", "en-US,en;q=0.9")
-	h.Set("Accept-Encoding", "gzip, deflate, br")
+	// NO manual Accept-Encoding: Go's transport adds gzip and transparently
+	// decompresses. Setting br/deflate by hand made servers return compressed
+	// bytes we never unwrapped — binary garbage output (and terminal bells).
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Sec-Fetch-Dest", "document")
 	h.Set("Sec-Fetch-Mode", "navigate")
@@ -98,6 +101,34 @@ func blockedPage(body, ctype string) bool {
 // clean markdown).
 func readerURL(raw string) string {
 	return "https://r.jina.ai/" + raw
+}
+
+// webBody reads the response body, transparently unwrapping gzip when the
+// server compressed it despite our headers (defensive: never feed the model
+// binary garbage).
+func webBody(resp *http.Response) (string, error) {
+	r := io.LimitReader(resp.Body, webMaxBytes)
+	if resp.Header.Get("Content-Encoding") == "gzip" ||
+		(resp.Header.Get("Content-Type") == "" && looksGzip(r)) {
+		zr, err := gzip.NewReader(io.MultiReader(r, resp.Body))
+		if err == nil {
+			return readAllCap(zr)
+		}
+		return "", fmt.Errorf("gzip unwrap failed: %w", err)
+	}
+	return readAllCap(r)
+}
+
+// looksGzip sniffs the 1f 8b magic bytes without consuming the reader.
+func looksGzip(r io.Reader) bool {
+	var m [2]byte
+	n, _ := io.ReadFull(r, m[:])
+	return n == 2 && m[0] == 0x1f && m[1] == 0x8b
+}
+
+func readAllCap(r io.Reader) (string, error) {
+	b, err := io.ReadAll(r)
+	return string(b), err
 }
 
 // WebFetch downloads a URL, strips scripts/styles/HTML tags and returns
@@ -170,16 +201,16 @@ func (e *Env) tryFetch(rawURL string) Result {
 		return Result{OK: false, Output: fmt.Sprintf("http %d for %s", resp.StatusCode, rawURL)}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, webMaxBytes))
+	body, err := webBody(resp)
 	if err != nil {
 		return Result{OK: false, Output: "read failed: " + err.Error()}
 	}
 	ctype := resp.Header.Get("Content-Type")
-	if blockedPage(string(body), ctype) {
+	if blockedPage(body, ctype) {
 		return Result{OK: false, Output: "bot challenge page (cloudflare/captcha) — falling back"}
 	}
 
-	text := extractText(string(body))
+	text := extractText(body)
 	if text == "" {
 		return Result{OK: false, Output: "page had no readable text (JS-only site?)"}
 	}
@@ -206,11 +237,11 @@ func (e *Env) readerFetch(rawURL string) Result {
 	if resp.StatusCode != http.StatusOK {
 		return Result{OK: false, Output: fmt.Sprintf("http %d (reader) for %s — site is likely hard-blocked by a bot wall", resp.StatusCode, rawURL)}
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, webMaxBytes))
+	b, err := webBody(resp)
 	if err != nil {
 		return Result{OK: false, Output: "reader read failed: " + err.Error()}
 	}
-	text := strings.TrimSpace(string(b))
+	text := strings.TrimSpace(b)
 	if text == "" {
 		return Result{OK: false, Output: "reader returned empty content for " + rawURL}
 	}

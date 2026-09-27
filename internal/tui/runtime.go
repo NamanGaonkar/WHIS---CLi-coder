@@ -170,9 +170,16 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
   /undo           roll back to the last pre-edit snapshot
   /init           (re)generate WHIS.md project guide
   /sessions       list saved sessions
+  /themes         switch the color palette (also: ? or ctrl+t)
   /help           this help
 keys:
-  Ctrl+P  toggle plan pane   Ctrl+C/D quit   y/n approve diffs`, nil
+  /       command menu (arrow keys or mouse click to pick)
+  ?       theme picker
+  Ctrl+T  theme picker        Ctrl+P  plan pane toggle
+  Ctrl+O  expand code blocks  Ctrl+C/D quit
+  y/n     approve diffs       esc     stop the agent
+provider keys:
+  / -> provider -> "edit / re-enter a provider key" replaces a saved key`, nil
 	}
 	return "", fmt.Errorf("unknown command %s (try /help)", fields[0])
 }

@@ -129,7 +129,9 @@ func (o *overlay) openModeMenu(current string) {
 }
 
 // openProviderMenu lists providers; hints show masked key fingerprints so
-// multiple configured keys stay distinguishable without ever exposing them.
+// multiple configured keys stay distinguishable. Selecting a provider with
+// a saved key opens the model list; "edit key" re-enters the key form so
+// existing keys can be replaced (opencode parity).
 func (o *overlay) openProviderMenu(keys map[string]string) {
 	o.mode = overlayProvider
 	o.title = "SELECT PROVIDER"
@@ -146,6 +148,30 @@ func (o *overlay) openProviderMenu(keys map[string]string) {
 			label: p.Label, hint: hint, value: p.Name,
 			disabled: false, // selectable even without a key: prompts for it
 		})
+	}
+	o.items = append(o.items, menuItem{
+		label: "edit / re-enter a provider key", hint: "replace a saved key",
+		value: "@editkey",
+	})
+}
+
+// openProviderEditMenu lists key-holding providers for key replacement.
+// Picking one jumps straight into the masked key form (existing key shows
+// masked in the hint so you know what you are replacing).
+func (o *overlay) openProviderEditMenu(keys map[string]string) {
+	o.mode = overlayProvider
+	o.title = "EDIT PROVIDER KEY"
+	o.cursor = 0
+	o.items = nil
+	for _, p := range provider.Providers() {
+		if !p.NeedsKey {
+			continue
+		}
+		hint := "no key yet"
+		if k := keys[p.Name]; k != "" {
+			hint = "replace " + config.Mask(k)
+		}
+		o.items = append(o.items, menuItem{label: p.Label, hint: hint, value: "@set:" + p.Name})
 	}
 }
 
