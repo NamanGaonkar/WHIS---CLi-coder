@@ -21,6 +21,7 @@ const (
 	overlayKeyInput              // provider needs a key → masked input
 	overlaySessions              // /sessions → pick session to resume
 	overlayWorkMode              // /mode → pick work mode (plan/ask/auto)
+	overlayHelp                  // /help → scrollable help panel (not chat)
 )
 
 // menuItem is one selectable row in an overlay.
@@ -39,6 +40,19 @@ type overlay struct {
 	cursor   int
 	provider string // chosen provider for overlayModel / overlayKeyInput
 	title    string
+	lines    []string // free-text rows for overlayHelp
+	scroll   int      // help panel scroll offset
+}
+
+// openHelp shows the help text in a scrollable panel instead of dumping it
+// into the chat transcript.
+func (o *overlay) openHelp(text string) {
+	o.mode = overlayHelp
+	o.title = "HELP · COMMANDS & KEYS"
+	o.cursor = 0
+	o.scroll = 0
+	o.items = nil
+	o.lines = strings.Split(text, "\n")
 }
 
 // openSlashMenu shows the "/" command options.
@@ -54,7 +68,7 @@ func (o *overlay) openSlashMenu() {
 		{label: "task", hint: "run an isolated subagent task", value: "/task"},
 		{label: "undo", hint: "roll back last change", value: "/undo"},
 		{label: "init", hint: "(re)generate WHIS.md", value: "/init"},
-		{label: "help", hint: "all commands & keys", value: "/help"},
+		{label: "help", hint: "commands & keys in a panel", value: "@help"},
 	}
 }
 
@@ -253,6 +267,18 @@ func (o *overlay) openKeyInput(prov string) {
 	o.provider = prov
 }
 
+// scrollHelp shifts the help panel scroll offset (d clamps internally).
+func (o *overlay) scrollHelp(d int) {
+	max := len(o.lines) - 1
+	o.scroll += d
+	if o.scroll < 0 {
+		o.scroll = 0
+	}
+	if o.scroll > max {
+		o.scroll = max
+	}
+}
+
 // openSessions lists sessions for the current workspace.
 func (o *overlay) openSessions(root string) {
 	o.mode = overlaySessions
@@ -298,9 +324,37 @@ func (o *overlay) current() menuItem {
 }
 
 // view renders the overlay panel content (full terminal width; the caller
-// adds the border). Rows are label + metrics hint, cursor left.
-func (o overlay) view(width int) string {
+// adds the border). maxRows is the row budget so help can window its lines.
+func (o overlay) view(width, maxRows int) string {
 	var b strings.Builder
+	if o.mode == overlayHelp {
+		b.WriteString(menuTitleStyle.Render(" "+o.title+" ") + "\n\n")
+		room := maxRows - 4 // title + blank + nav
+		if room < 1 {
+			room = 1
+		}
+		start := o.scroll
+		if start > len(o.lines)-room {
+			start = len(o.lines) - room
+		}
+		if start < 0 {
+			start = 0
+		}
+		end := start + room
+		if end > len(o.lines) {
+			end = len(o.lines)
+		}
+		for _, ln := range o.lines[start:end] {
+			b.WriteString(menuRowStyle.Render(ln) + "\n")
+		}
+		if len(o.lines) > room {
+			b.WriteString(menuNavStyle.Render(fmt.Sprintf("lines %d-%d of %d · up/down or wheel · esc close",
+				start+1, end, len(o.lines))))
+		} else {
+			b.WriteString(menuNavStyle.Render("esc close"))
+		}
+		return b.String()
+	}
 	b.WriteString(menuTitleStyle.Render(" "+o.title+" ") + "\n\n")
 	for i, it := range o.items {
 		cursor := "  "

@@ -161,15 +161,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// keyboard scrolling of the transcript (chat history)
 		if m.over.mode == overlayNone {
 			switch msg.String() {
-			case "pgup", "shift+up":
+			case "pgup", "shift+up", "ctrl+up":
 				m.vp.LineUp(m.vp.Height / 2)
 				return m, nil
-			case "pgdown", "shift+down":
+			case "pgdown", "shift+down", "ctrl+down":
 				m.vp.LineDown(m.vp.Height / 2)
+				return m, nil
+			case "alt+up":
+				m.vp.LineUp(2)
+				return m, nil
+			case "alt+down":
+				m.vp.LineDown(2)
 				return m, nil
 			case "end":
 				m.vp.GotoBottom()
 				return m, nil
+			case "up", "down":
+				// arrows scroll the chat when the input is EMPTY. Windows
+				// ConPTY translates mouse wheel to arrow keys for legacy
+				// input, so this path is also what makes the wheel work.
+				if strings.TrimSpace(m.input.Value()) == "" {
+					if msg.String() == "up" {
+						m.vp.LineUp(2)
+					} else {
+						m.vp.LineDown(2)
+					}
+					return m, nil
+				}
 			}
 		}
 
@@ -246,10 +264,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickStatus()
 
 	case tea.MouseMsg:
-		switch msg.Type {
-		case tea.MouseWheelUp:
+		// wheel arrives as Type or Button depending on backend; check both.
+		if m.over.mode == overlayHelp {
+			switch {
+			case msg.Type == tea.MouseWheelUp || msg.Button == tea.MouseButtonWheelUp:
+				m.over.scrollHelp(-3)
+			case msg.Type == tea.MouseWheelDown || msg.Button == tea.MouseButtonWheelDown:
+				m.over.scrollHelp(3)
+			}
+			return m, nil
+		}
+		switch {
+		case msg.Type == tea.MouseWheelUp || msg.Button == tea.MouseButtonWheelUp:
 			m.vp.LineUp(3)
-		case tea.MouseWheelDown:
+		case msg.Type == tea.MouseWheelDown || msg.Button == tea.MouseButtonWheelDown:
 			m.vp.LineDown(3)
 		}
 		return m, nil
@@ -311,6 +339,12 @@ func (m *model) submitPrompt(splash bool) tea.Cmd {
 	}
 	if strings.HasPrefix(v, "/") {
 		m.input.SetValue("")
+		if v == "/help" {
+			if resp, err := m.agent.HandleSlash("/help"); err == nil && resp != "" {
+				m.over.openHelp(resp)
+			}
+			return nil
+		}
 		return m.runSlash(v)
 	}
 	if !m.agent.Ready() {
@@ -408,6 +442,20 @@ func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.activateOverlay()
 	}
+	// help panel: wheel-like keys scroll, esc closes (handled above)
+	if m.over.mode == overlayHelp {
+		switch msg.String() {
+		case "up", "k":
+			m.over.scrollHelp(-2)
+		case "down", "j":
+			m.over.scrollHelp(2)
+		case "pgup":
+			m.over.scrollHelp(-(m.vp.Height / 2))
+		case "pgdown":
+			m.over.scrollHelp(m.vp.Height / 2)
+		}
+		return m, nil
+	}
 	if m.over.mode == overlayKeyInput {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -439,6 +487,11 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		m.over = overlay{}
 		m.input.SetValue("")
 		switch cmd {
+		case "@help":
+			if resp, err := m.agent.HandleSlash("/help"); err == nil && resp != "" {
+				m.over.openHelp(resp)
+			}
+			return m, nil
 		case "/model", "/provider":
 			m.over.openProviderMenu(m.agent.Keys())
 			return m, nil
@@ -757,12 +810,12 @@ func (m model) safeView() (s string) {
 // input inside it when entering a key). maxRows caps the body so small
 // terminals get a scrollable-short menu instead of an overflowing frame.
 func (m model) menuBlock(maxRows int) string {
-	body := m.over.view(m.width)
+	body := m.over.view(m.width, maxRows)
 	if m.over.mode == overlayKeyInput {
 		body += "\n\n" + m.input.View()
 	}
 	rows := strings.Split(body, "\n")
-	if maxRows >= 1 && len(rows) > maxRows {
+	if m.over.mode != overlayHelp && maxRows >= 1 && len(rows) > maxRows { // help windows itself
 		// keep the title and as many items as fit; the note replaces the
 		// last kept row so the result is EXACTLY maxRows rows.
 		kept := append([]string{}, rows[:maxRows-1]...)
