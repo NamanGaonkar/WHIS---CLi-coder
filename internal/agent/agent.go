@@ -191,8 +191,7 @@ func (a *Agent) SetMode(mode string) error {
 func (a *Agent) allowedTools() []provider.Tool {
 	readOnly := map[string]bool{
 		"locate_symbol": true, "read_range": true,
-		"search_codebase": true, "list_tree": true,
-		"web_fetch": true,
+		"search_codebase": true, "list_tree": true, "web_fetch": true,
 	}
 	var out []provider.Tool
 	for _, d := range tool.Manifest() {
@@ -272,9 +271,10 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 			}
 			if d.Usage != nil {
 				a.recordUsage(*d.Usage, time.Since(start))
-				// live telemetry for the status bar
+				// live telemetry for the status bar (Cost included so the TUI
+				// can show real spend, not just token counts)
 				u := *d.Usage
-				emit(out, Event{Type: "usage", Usage: &u, Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
+				emit(out, Event{Type: "usage", Usage: &u, Turn: turn + 1, DurationMS: time.Since(start).Milliseconds(), Cost: a.Prices.Cost(u)})
 			}
 			if ctx.Err() != nil {
 				// user interrupted mid-stream

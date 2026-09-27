@@ -33,6 +33,33 @@ func TestWebPrivateHostBlocked(t *testing.T) {
 	}
 }
 
+func TestBlockedPageDetection(t *testing.T) {
+	cf := `<html><head><title>Just a moment...</title></head><body>
+	<script src="/cdn-cgi/challenge-platform/h/b/orchestra/..."></script>
+	<div>Checking if the site connection is secure</div><div class="cf-turnstile"></div></body></html>`
+	if !blockedPage(cf, "text/html") {
+		t.Fatal("cloudflare challenge page not detected")
+	}
+	normal := `<html><body><h1>Real content about just a moment of history</h1><p>fine</p></body></html>`
+	if blockedPage(normal, "text/html") {
+		t.Fatal("normal page wrongly flagged as challenge")
+	}
+}
+
+func TestReaderURLEscapes(t *testing.T) {
+	got := readerURL("https://example.com/a b?q=1")
+	if !strings.HasPrefix(got, "https://r.jina.ai/https://example.com/") {
+		t.Fatalf("reader url wrong: %q", got)
+	}
+}
+
+func TestExtractTextCaps(t *testing.T) {
+	out := extractText("<p>" + strings.Repeat("x", 20000) + "</p>")
+	if len(out) > webMaxChars+40 {
+		t.Fatalf("extractText did not cap output: %d", len(out))
+	}
+}
+
 func TestWebFetchEmptyURL(t *testing.T) {
 	e := NewEnv(".")
 	r := e.WebFetch("   ")

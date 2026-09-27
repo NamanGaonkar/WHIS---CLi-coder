@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"whis/internal/agent"
 	"whis/internal/config"
 	"whis/internal/provider"
@@ -22,6 +24,7 @@ const (
 	overlaySessions              // /sessions → pick session to resume
 	overlayWorkMode              // /mode → pick work mode (plan/ask/auto)
 	overlayHelp                  // /help → scrollable help panel (not chat)
+	overlayThemes                // /themes → pick TUI palette
 )
 
 // menuItem is one selectable row in an overlay.
@@ -69,7 +72,38 @@ func (o *overlay) openSlashMenu() {
 		{label: "undo", hint: "roll back last change", value: "/undo"},
 		{label: "init", hint: "(re)generate WHIS.md", value: "/init"},
 		{label: "help", hint: "commands & keys in a panel", value: "@help"},
+		{label: "themes", hint: "switch the TUI color palette", value: "/themes"},
 	}
+}
+
+// openThemes lists the palettes; the active one gets an IN USE marker.
+func (o *overlay) openThemes(current int) {
+	o.mode = overlayThemes
+	o.title = "SELECT THEME"
+	o.cursor = 0
+	o.items = nil
+	for i, th := range themes {
+		hint := themeHint(th)
+		selected := false
+		if i == current {
+			hint = "IN USE · " + hint
+			selected = true
+		}
+		o.items = append(o.items, menuItem{label: th.name, hint: hint, value: th.name, selected: selected})
+	}
+	for i, it := range o.items {
+		if it.selected {
+			o.cursor = i
+		}
+	}
+}
+
+// themeHint renders the accent in the hint column so the menu previews the
+// palette (non-ASCII escape text is stripped by the row renderer).
+func themeHint(th themeDef) string {
+	return menuRowStyle.Foreground(lipgloss.Color(th.ember)).Render("accent ") +
+		menuRowStyle.Foreground(lipgloss.Color(th.amber)).Render("second ") +
+		menuRowStyle.Foreground(lipgloss.Color(th.dim)).Render("dim")
 }
 
 // openModeMenu lists work modes; current gets an IN USE marker.
@@ -370,12 +404,19 @@ func (o overlay) view(width, maxRows int) string {
 		if max := width - 24; max > 20 && len(label) > max {
 			label = label[:max-1] + "…"
 		}
-		b.WriteString(cursor + style.Render(label) + "  " + menuHintStyle.Render(it.hint) + "\n")
+		// hints may embed raw ANSI color previews; never render that text.
+		hint := it.hint
+		if strings.Contains(hint, "\x1b[") {
+			hint = stripANSI(hint)
+		}
+		b.WriteString(cursor + style.Render(label) + "  " + menuHintStyle.Render(hint) + "\n")
 	}
 	nav := "\nup/down move · enter select · esc back"
 	switch o.mode {
 	case overlaySlashMenu:
 		nav = "\nup/down move · enter run · esc back"
+	case overlayThemes:
+		nav = "\nenter apply · esc keep current"
 	case overlaySessions:
 		nav = "\nenter resume · esc back"
 	case overlayKeyInput:

@@ -38,7 +38,7 @@ func TestSmokeLayoutNeverOverflows(t *testing.T) {
 			v := mm.View()
 			rows, maxW := frameStats(v)
 			if rows > sz.Height {
-				t.Fatalf("%s @ %dx%d: frame has %d rows, screen has %d", stage, sz.Width, sz.Height, rows, sz.Height)
+				t.Fatalf("%s @ %dx%d: frame has %d rows, screen has %d\n%s", stage, sz.Width, sz.Height, rows, sz.Height, v)
 			}
 			if maxW > sz.Width {
 				for _, ln := range strings.Split(v, "\n") {

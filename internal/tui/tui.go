@@ -66,6 +66,14 @@ type model struct {
 	// new sequence number; events from older chains are dropped instead of
 	// clearing the new run's state (fixes delayed/doubled replies).
 	runSeq int
+
+	// one queued live-usage event: syncStatus() runs after every event and
+	// would otherwise overwrite the fresh tok numbers the usage event just
+	// set (root cause of "tok 0" persisting after each turn).
+	usageWait *TUIEvent
+	// usageMerged latches once session.Totals() catches up with the last
+	// live-usage event, so tok never flickers back to a stale value.
+	usageMerged bool
 }
 
 // line is one transcript entry.
@@ -236,11 +244,30 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOverlay(msg)
 		}
 
+		// menu cycling when the box is empty (opencode parity): / = commands,
+		// ? = themes
+		if strings.TrimSpace(m.input.Value()) == "" {
+			switch msg.String() {
+			case "/":
+				m.input.SetValue("")
+				m.over.openSlashMenu()
+				return m, nil
+			case "?":
+				m.over.openThemes(curTheme)
+				return m, nil
+			}
+		}
+
 		if m.splash {
 			// "/" opens the command menu but keeps the logo on screen
 			if msg.String() == "/" {
 				m.input.SetValue("")
 				m.over.openSlashMenu()
+				return m, nil
+			}
+			// "?" opens the theme picker on splash too
+			if msg.String() == "?" {
+				m.over.openThemes(curTheme)
 				return m, nil
 			}
 			// any typing lands in the input; enter dismisses and submits
@@ -271,6 +298,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if msg.String() == "ctrl+o" {
 				m.toggleCodeBlocks()
+				return m, nil
+			}
+			if msg.String() == "ctrl+t" {
+				m.over.openThemes(curTheme)
 				return m, nil
 			}
 			if msg.String() == "enter" {
@@ -321,15 +352,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.LineDown(3)
 		}
 		return m, nil
-	}
-
-	// typing "/" at an empty input opens the command menu immediately
-	if km, ok := msg.(tea.KeyMsg); ok && m.over.mode == overlayNone && !m.splash {
-		if km.String() == "/" && strings.TrimSpace(m.input.Value()) == "" {
-			m.input.SetValue("")
-			m.over.openSlashMenu()
-			return m, nil
-		}
 	}
 
 	var cmd tea.Cmd
@@ -385,6 +407,10 @@ func (m *model) submitPrompt(splash bool) tea.Cmd {
 			}
 			return nil
 		}
+		if v == "/themes" {
+			m.over.openThemes(curTheme)
+			return nil
+		}
 		return m.runSlash(v)
 	}
 	if !m.agent.Ready() {
@@ -414,6 +440,9 @@ func (m *model) runSlash(v string) tea.Cmd {
 		return nil
 	case "/mode":
 		m.over.openModeMenu(m.agent.Status().Mode)
+		return nil
+	case "/themes":
+		m.over.openThemes(curTheme)
 		return nil
 	}
 	resp, err := m.agent.HandleSlash(v)
@@ -604,6 +633,18 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case overlayThemes:
+		idx := curTheme
+		for i, th := range themes {
+			if th.name == it.value {
+				idx = i
+			}
+		}
+		m.over = overlay{}
+		applyTheme(idx)
+		m.lines = append(m.lines, line{kind: "info", body: "theme -> " + themes[idx].name})
+		return m, nil
+
 	case overlaySessions:
 		if it.value == "" || it.disabled {
 			m.over = overlay{}
@@ -700,10 +741,13 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "usage":
-		// live telemetry mid-run
+		// live telemetry mid-run. The agent persists the turn into the session
+		// BEFORE emitting this event, but the session JSON on disk only
+		// reloads lazily — Status() may still report stale totals here. Hold
+		// this event until the totals catch up (tok never resets to 0).
 		if ev.In > 0 || ev.Out > 0 {
-			m.status.In, m.status.Cached, m.status.Out = ev.In, ev.Cached, ev.Out
-			m.status.Cost += ev.Cost
+			m.usageWait = &ev
+			m.usageMerged = false
 		}
 		if ev.Turn > 0 {
 			m.turnNum = ev.Turn
@@ -719,8 +763,10 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		m.approveFn = ev.Approve
 	case "turn_done":
 		m.flushStream()
-		m.status.In, m.status.Cached, m.status.Out = ev.In, ev.Cached, ev.Out
-		m.status.Cost += ev.Cost
+		if ev.In > 0 || ev.Out > 0 {
+			m.usageWait = &ev
+			m.usageMerged = false
+		}
 		m.endRun()
 		m.status.Spinning = false
 		if strings.Contains(ev.Text, "DONE:") {
@@ -787,9 +833,9 @@ func waitMore(rest <-chan TUIEvent, seq int) tea.Cmd {
 		}
 		return streamChunk{ev: ev, seq: seq, rest: rest}
 	}
-}
-
-// syncStatus pulls fresh status from the agent.
+} // syncStatus pulls fresh status from the agent. Token counters come from
+// the session totals, but a just-arrived usage event may be ahead of them —
+// keep the live numbers visible until the totals catch up (fixes "tok 0").
 func (m *model) syncStatus() {
 	if m.agent == nil {
 		return
@@ -801,6 +847,21 @@ func (m *model) syncStatus() {
 	m.status.Branch = st.Branch
 	m.status.CtxUsed = st.CtxUsed
 	m.status.CtxLimit = st.CtxLimit
+	if m.usageWait != nil && !m.usageMerged {
+		if st.In >= m.usageWait.In && st.Out >= m.usageWait.Out {
+			m.usageMerged = true // totals caught up; release the live event
+		} else {
+			m.status.In = m.usageWait.In
+			m.status.Cached = m.usageWait.Cached
+			m.status.Out = m.usageWait.Out
+			if m.usageWait.Cost > 0 {
+				m.status.Cost = m.usageWait.Cost
+			}
+		}
+	}
+	if m.usageMerged && m.usageWait != nil && m.usageWait.Cost > 0 && m.status.Cost < m.usageWait.Cost {
+		m.status.Cost = m.usageWait.Cost
+	}
 }
 
 func clampInt(v, lo, hi int) int {
@@ -854,16 +915,24 @@ func (m model) menuBlock(maxRows int) string {
 	if m.over.mode == overlayKeyInput {
 		body += "\n\n" + m.input.View()
 	}
+	// border 2 cols + padding 4 cols = 6; inner width keeps total == m.width
+	inner := clampInt(m.width-6, 20, m.width)
 	rows := strings.Split(body, "\n")
 	if m.over.mode != overlayHelp && maxRows >= 1 && len(rows) > maxRows { // help windows itself
 		// keep the title and as many items as fit; the note replaces the
 		// last kept row so the result is EXACTLY maxRows rows.
 		kept := append([]string{}, rows[:maxRows-1]...)
-		kept = append(kept, fmt.Sprintf("... (%d more rows — enlarge terminal)", len(rows)-maxRows+1))
+		kept = append(kept, fmt.Sprintf("... (%d more rows - enlarge terminal)", len(rows)-maxRows+1))
 		body = strings.Join(kept, "\n")
 	}
-	// border 2 cols + padding 4 cols = 6; inner width keeps total == m.width
-	inner := clampInt(m.width-6, 20, m.width)
+	// hard-clip every row to the CONTENT width (inner minus the 2+2 padding)
+	// AFTER capping: lipgloss Width() wraps long rows, and wrapped rows blow
+	// the exact row budget on narrow terminals (40-col overflow regression).
+	var clippedRows []string
+	for _, ln := range strings.Split(body, "\n") {
+		clippedRows = append(clippedRows, clipANSI(ln, inner-4))
+	}
+	body = strings.Join(clippedRows, "\n")
 	return menuPanelStyle.Width(inner).Render(body)
 }
 
@@ -891,7 +960,8 @@ func (m model) splashView() string {
 		// must be computed row by row): head rows + menu panel (menuRows+4
 		// for border+padding) + input (inRows+2) + status = height exactly.
 		inRows := strings.Count(m.input.View(), "\n") + 1
-		avail := clampInt(m.height-6-inRows, 3, m.height) // -1: padding row under input
+		// budget: content(headRows+menuRows+4) + input(inRows+2) + pad + status
+		avail := clampInt(m.height-5-inRows, 3, m.height)
 		headRows := 0
 		var head []string
 		if m.height >= 20 && m.width >= 30 {
@@ -901,10 +971,10 @@ func (m model) splashView() string {
 		menuRows := avail - headRows - 4
 		if menuRows < 1 {
 			head, headRows = nil, 0 // tiny terminal: drop the logo entirely
-			menuRows = clampInt(avail-4, 1, 40)
+			menuRows = clampInt(m.height-9-inRows, 1, 40)
 		}
 		content := lipgloss.JoinVertical(lipgloss.Left, append(head, m.menuBlock(menuRows))...)
-		return content + "\n" + inpView(m) + "\n\n" + m.statusBar()
+		return content + "\n" + inpView(m) + "\n" + blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n" + m.statusBar()
 	}
 
 	inRows := strings.Count(m.input.View(), "\n") + 1
@@ -920,7 +990,7 @@ func (m model) splashView() string {
 		content = lipgloss.JoinVertical(lipgloss.Center, m.splashLogo(true), modelLine)
 	}
 	body := lipgloss.Place(m.width, avail, lipgloss.Center, lipgloss.Center, content)
-	return body + "\n" + inpView(m) + "\n\n" + m.statusBar()
+	return body + "\n" + inpView(m) + "\n" + blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n" + m.statusBar()
 }
 
 // splashLogo renders the full banner, or a one-line wordmark when compact.
@@ -971,17 +1041,44 @@ func (m model) sessionView() string {
 	// viewport content/dimensions are synced in Update -> syncViewport;
 	// the view here only READS the synced viewport (pure render).
 
-	// overlay-open layout: the menu panel REPLACES the transcript.
-	// Rows: header+sep 2, vp H+1, panel (P + 2 border + 2 padding) + 1,
-	// status 1 => H + P + 8. syncViewport sets H = (height-9)/2, so
-	// P = height-H-8 closes the frame exactly.
+	// overlay-open layout: the menu panel REPLACES the transcript and sits
+	// DIRECTLY ABOVE the input box — it never rises over or above the text
+	// box (user rule: menus stay down). Row budget (rows, not separators):
+	//   vp shown: 1 + H + (P+4) + 1 + (inRows+2) + 1 pad + 1 status
+	//   vp hidden: 1 + (P+4) + 1 + (inRows+2) + 1 pad + 1 status
+	// Cramped terminals shed rows instead of overflowing: first the input
+	// box + pad (the menu outranks the box), then the status row.
 	if m.over.mode != overlayNone {
-		panelMax := clampInt(m.height-8, 1, 40)
+		inRows := strings.Count(m.input.View(), "\n") + 1
+		panelMax := 0
 		if m.vp.Height >= 3 {
 			b.WriteString(vpWithScrollbar(m.vp) + "\n")
-			panelMax = clampInt(m.height-m.vp.Height-9, 1, 40)
+			panelMax = m.height - m.vp.Height - 10 - inRows
+		} else {
+			panelMax = m.height - 10 - inRows
 		}
-		b.WriteString(m.menuBlock(panelMax) + "\n" + m.statusBar())
+		if panelMax < 6 {
+			// drop the input box and pad row, keep the status bar
+			if m.vp.Height >= 3 {
+				panelMax = m.height - m.vp.Height - 8
+			} else {
+				panelMax = m.height - 7
+			}
+			if panelMax < 6 {
+				// drop the status row too: panel takes the rest
+				if m.vp.Height >= 3 {
+					panelMax = m.height - m.vp.Height - 7
+				} else {
+					panelMax = m.height - 5
+				}
+				b.WriteString(m.menuBlock(clampInt(panelMax, 1, 40)))
+				return b.String()
+			}
+			b.WriteString(m.menuBlock(clampInt(panelMax, 1, 40)) + "\n" + m.statusBar())
+			return b.String()
+		}
+		b.WriteString(m.menuBlock(clampInt(panelMax, 1, 40)) + "\n" + inpView(m) + "\n" +
+			blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n" + m.statusBar())
 		return b.String()
 	}
 
@@ -996,8 +1093,10 @@ func (m model) sessionView() string {
 	}
 	b.WriteString(inpView(m) + "\n")
 
-	// padding row under the text field, then the telemetry bar
-	b.WriteString("\n" + m.statusBar())
+	// padding row under the text field: FULLY BLACK so the backing covers
+	// the gap between box and status bar too, then the telemetry bar.
+	b.WriteString(blackFill.Render(strings.Repeat(" ", maxInt(0, m.width))) + "\n")
+	b.WriteString(m.statusBar())
 	return b.String()
 }
 
@@ -1041,7 +1140,9 @@ func maxInt(a, b int) int {
 }
 
 // statusBar is the simplified bottom bar: tokens used, run timer (while
-// working), and current mode — nothing else.
+// working), and current mode — nothing else. Rendered as a fully black row
+// (blackFill) so the telemetry strip reads as one continuous black band
+// under the input box.
 func (m model) statusBar() string {
 	tok := m.status.In + m.status.Out
 	timer := ""
@@ -1050,8 +1151,9 @@ func (m model) statusBar() string {
 	}
 	mode := m.agent.Status().Mode
 	bar := fmt.Sprintf(" tok %s · mode %s%s", commify(tok), mode, timer)
-	// width-2 content + 2 padding = full terminal width, matching every box
-	return barStyle.Width(clampInt(m.width-2, 10, m.width)).MaxWidth(m.width).Render(bar)
+	// black backing over the entire row (content + padding cols), full width
+	return blackFill.Width(clampInt(m.width, 10, m.width)).MaxWidth(m.width).
+		Render(" " + bar)
 }
 
 // renderTranscript renders all transcript lines with styling. Assistant md
