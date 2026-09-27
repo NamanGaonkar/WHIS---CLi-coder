@@ -174,4 +174,4 @@ func (w wizard) View() string {
 }
 
 // titleStyle for wizard headers.
-var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(cyan)
+var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(ember)

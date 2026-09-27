@@ -41,8 +41,6 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 var (
 	spinnerMu  sync.Mutex
 	spinnerIdx int
-	startOnce  sync.Once
-	startClock time.Time
 )
 
 func nextSpinner() string {
@@ -53,17 +51,7 @@ func nextSpinner() string {
 	return f
 }
 
-func elapsedString(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
-	default:
-		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
-	}
-}
+// fmtDur is defined in tui.go; runtime keeps only the spinner.
 
 // --- concrete adapter: *agent.Agent -> AgentAPI ---
 
@@ -101,7 +89,6 @@ func (ad *Adapter) Interrupt() {
 
 // Run starts a turn; it emits TUIEvents from the agent's event channel.
 func (ad *Adapter) Run(prompt string) (<-chan TUIEvent, error) {
-	startOnce.Do(func() { startClock = time.Now() })
 	ctx, cancel := context.WithCancel(context.Background())
 	ad.cancel = cancel
 	ch, err := ad.A.Run(ctx, prompt)

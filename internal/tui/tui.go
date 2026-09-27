@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -15,44 +15,6 @@ import (
 
 // Version is set from main.
 var Version = "0.1.0"
-
-// ANSI accent palette (cybernetic).
-var (
-	cyber   = lipgloss.Color("#7C3AED") // violet
-	cyan    = lipgloss.Color("#22D3EE")
-	green   = lipgloss.Color("#34D399")
-	red     = lipgloss.Color("#F87171")
-	yellow  = lipgloss.Color("#FBBF24")
-	dimGray = lipgloss.Color("#4B5563")
-)
-
-var (
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E5E7EB")).Background(cyber).Padding(0, 1)
-	badgeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#0B0F19")).Background(cyan).Padding(0, 1).Bold(true)
-	dimStyle    = lipgloss.NewStyle().Foreground(dimGray)
-	okStyle     = lipgloss.NewStyle().Foreground(green)
-	errStyle    = lipgloss.NewStyle().Foreground(red).Bold(true)
-	warnStyle   = lipgloss.NewStyle().Foreground(yellow)
-	planStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF")).Border(lipgloss.RoundedBorder()).BorderForeground(dimGray).Padding(0, 1)
-	toolStyle   = lipgloss.NewStyle().Foreground(cyan)
-	diffAdd     = lipgloss.NewStyle().Foreground(green)
-	diffDel     = lipgloss.NewStyle().Foreground(red)
-	inputStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#A78BFA")).Padding(0, 1)
-	barStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF")).Background(lipgloss.Color("#111827")).Padding(0, 1)
-)
-
-// banner is the big WHIS wordmark (ANSI-shadow style) shown on startup,
-// one vivid gradient color per row.
-var banner = []string{
-	"██╗    ██╗ ██╗  ██╗ ██╗ ███████╗",
-	"██║    ██║ ██║  ██║ ██║ ██╔════╝",
-	"██║ █╗ ██║ ███████║ ██║ ███████╗",
-	"██║███╗██║ ██╔══██║ ██║ ╚════██║",
-	"╚███╔███╔╝ ██║  ██║ ██║ ███████║",
-	" ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝",
-}
-
-var bannerColors = []string{"#22D3EE", "#38BDF8", "#818CF8", "#A78BFA", "#E879F9", "#F472B6"}
 
 // renderMD renders markdown with a dark glamour theme (falls back to plain).
 func renderMD(md string, width int) string {
@@ -74,7 +36,7 @@ func renderMD(md string, width int) string {
 type model struct {
 	agent           AgentAPI
 	vp              viewport.Model
-	input           textinput.Model
+	input           textarea.Model
 	width           int
 	height          int
 	lines           []line // transcript lines (pre-rendered ANSI)
@@ -91,13 +53,24 @@ type model struct {
 	pendingProvider string       // provider for the custom id / key being entered
 	codeOpen        map[int]bool // expanded code blocks per md line index
 	mdSeq           int          // monotonic id for md lines
-	hasDone         bool         // last turn ended with a DONE banner
 	turnNum         int          // current agent turn (1-based)
+	hasDone         bool         // last turn ended with a DONE banner
+	busyNoticed     bool         // busy notice shown once per run
+
+	// run timer state: only advances while the agent is working
+	runStart  time.Time
+	runActive bool
+	runLast   time.Duration
+
+	// runSeq guards against stale event chains: each submitted prompt gets a
+	// new sequence number; events from older chains are dropped instead of
+	// clearing the new run's state (fixes delayed/doubled replies).
+	runSeq int
 }
 
 // line is one transcript entry.
 type line struct {
-	kind string // "user" | "md" | "plan" | "tool" | "toolout" | "error" | "info"
+	kind string // "user" | "md" | "plan" | "tool" | "toolout" | "error" | "info" | "done"
 	body string
 	n    int // index for codeOpen maps (md lines)
 }
@@ -137,7 +110,9 @@ type TUIEvent struct {
 	Turn            int
 	Cost            float64
 	DurationMS      int64
-} // Status feeds the header/status bars.
+}
+
+// Status feeds the header/status bars.
 type Status struct {
 	Model           string
 	Provider        string
@@ -154,24 +129,27 @@ type Status struct {
 
 // New creates the initial Bubble Tea model for the main WHIS TUI.
 func New(a AgentAPI) tea.Model {
-	ti := textinput.New()
-	ti.Placeholder = "describe a task, WHIS handles the rest…  ( / for commands )"
-	ti.Focus()
-	ti.CharLimit = 8192
-	ti.Width = 60
+	ta := textarea.New()
+	ta.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
+	ta.Prompt = ""
+	ta.CharLimit = 16384
+	ta.ShowLineNumbers = false
+	ta.SetWidth(60)
+	ta.SetHeight(1)
+	ta.Focus()
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
-	return model{agent: a, input: ti, vp: vp, planOpen: true, splash: true}
+	return model{agent: a, input: ta, vp: vp, planOpen: true, splash: true}
 }
 
-func (m model) Init() tea.Cmd { return textinput.Blink }
+func (m model) Init() tea.Cmd { return textarea.Blink }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.vp.Width = msg.Width
-		m.vp.Height = clampInt(msg.Height-7, 3, msg.Height)
+		// textarea content width: full width minus border (2) + padding (2)
+		m.input.SetWidth(clampInt(msg.Width-4, 10, msg.Width))
 		return m, nil
 
 	case tea.KeyMsg:
@@ -195,91 +173,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// any typing lands in the input; enter dismisses and submits
 			if msg.String() == "enter" {
-				v := strings.TrimSpace(m.input.Value())
-				if v == "" {
-					return m, nil
-				}
-				m.splash = false
-				m.input.SetValue("")
-				m.lines = append(m.lines, line{kind: "user", body: v})
-				if !m.agent.Ready() {
-					m.lines = append(m.lines, line{kind: "error", body: "pick a model first — choose one below"})
-					m.over.openProviderMenu(m.agent.Keys())
-					return m, nil
-				}
-				m.status.Spinning = true
-				return m, m.startPrompt(v)
+				return m, m.submitPrompt(true)
 			}
 		} else {
-			switch msg.String() {
-			case "esc":
+			// esc: answer approval first, then interrupt a running agent
+			if msg.String() == "esc" {
 				if m.approval != "" {
 					m.answerApproval(false)
 					return m, nil
 				}
 				if m.status.Spinning {
-					// interrupt the running agent loop (gather/act/verify cycle)
 					m.agent.Interrupt()
 					return m, nil
 				}
-			case "y", "Y":
-				if m.approval != "" {
-					m.answerApproval(true)
-					return m, nil
-				}
-			case "n", "N":
-				if m.approval != "" {
-					m.answerApproval(false)
-					return m, nil
-				}
-			case "ctrl+p":
+			}
+			// y/n answer a pending approval modal (never steal typing: the
+			// input stays focused, so plain letters go into the textarea)
+			if (msg.String() == "y" || msg.String() == "n") && m.approval != "" {
+				m.answerApproval(msg.String() == "y")
+				return m, nil
+			}
+			if msg.String() == "ctrl+p" {
 				m.planOpen = !m.planOpen
 				return m, nil
-			case "c":
-				m.toggleCode(true)
+			}
+			// expand/collapse the last code block — only when the user is
+			// NOT typing (input empty), so c/t stay typeable in the editor.
+			if (msg.String() == "c" || msg.String() == "t") && strings.TrimSpace(m.input.Value()) == "" {
+				m.toggleCode(msg.String() == "c")
 				return m, nil
-			case "t":
-				m.toggleCode(false)
-				return m, nil
-			case "enter":
-				v := strings.TrimSpace(m.input.Value())
-				m.input.SetValue("")
-				if v == "" {
-					return m, nil
-				}
-				if strings.HasPrefix(v, "/") {
-					if v == "/quit" || v == "/exit" {
-						m.quitting = true
-						return m, tea.Quit
-					}
-					// menu commands open overlays; the rest go to the adapter
-					switch v {
-					case "/model":
-						m.over.openProviderMenu(m.agent.Keys())
-						return m, nil
-					case "/provider":
-						m.over.openProviderMenu(m.agent.Keys())
-						return m, nil
-					case "/sessions":
-						m.over.openSessions(m.agent.Workspace())
-						return m, nil
-					}
-					resp, err := m.agent.HandleSlash(v)
-					if err != nil {
-						m.lines = append(m.lines, line{kind: "error", body: err.Error()})
-					} else if resp != "" {
-						m.lines = append(m.lines, line{kind: "info", body: resp})
-					}
-					return m, nil
-				}
-				if !m.agent.Ready() {
-					m.lines = append(m.lines, line{kind: "error", body: "pick a model first — type / and choose model"})
-					m.over.openProviderMenu(m.agent.Keys())
-					return m, nil
-				}
-				m.lines = append(m.lines, line{kind: "user", body: v})
-				m.status.Spinning = true
-				return m, m.startPrompt(v)
+			}
+			if msg.String() == "enter" {
+				return m, m.submitPrompt(false)
 			}
 		}
 
@@ -287,15 +212,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleChunk(msg)
 
 	case streamDone:
-		m.status.Spinning = false
+		// only a chain for the CURRENT run may end the spinning state;
+		// stale chains from interrupted/superseded runs are ignored.
+		if msg.seq == m.runSeq {
+			m.status.Spinning = false
+			m.endRun()
+		}
 		m.flushStream()
 		return m, nil
 
 	case statusTick:
-		m.syncStatus()
-		m.status.Elapsed = msg.elapsed
-		m.status.Spinner = msg.spinner
+		if m.runActive {
+			m.status.Spinner = msg.spinner
+			m.status.Elapsed = fmtDur(time.Since(m.runStart))
+			m.runLast = time.Since(m.runStart)
+		}
 		return m, tickStatus()
+
+	case tea.MouseMsg:
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			m.vp.LineUp(3)
+		case tea.MouseWheelDown:
+			m.vp.LineDown(3)
+		}
+		return m, nil
 	}
 
 	// typing "/" at an empty input opens the command menu immediately
@@ -305,32 +246,115 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.over.openSlashMenu()
 			return m, nil
 		}
-		// submitting a custom model id
-		if km.String() == "enter" && m.customBuf {
-			v := strings.TrimSpace(m.input.Value())
-			m.input.SetValue("")
-			m.customBuf = false
-			m.input.Placeholder = "describe a task, WHIS handles the rest…  ( / for commands )"
-			if v != "" && m.pendingProvider != "" {
-				slug := m.pendingProvider + ":" + v
-				if m.pendingProvider == "openrouter" {
-					slug = "or:" + v
-				}
-				msg, err := m.agent.PickModel(slug)
-				if err != nil {
-					m.lines = append(m.lines, line{kind: "error", body: err.Error()})
-				} else if msg != "" {
-					m.lines = append(m.lines, line{kind: "info", body: msg})
-				}
-				m.pendingProvider = ""
-			}
-			return m, nil
-		}
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// submitPrompt sends the current input as a prompt. While a run is active the
+// submit is ignored (typed text stays in the box) so a second agent loop can
+// never start and starve the first one's event chain (delayed/doubled reply
+// fix). During the splash phase empty submits do nothing.
+func (m *model) submitPrompt(splash bool) tea.Cmd {
+	v := strings.TrimSpace(m.input.Value())
+	if v == "" {
+		return nil
+	}
+	// entering a custom model id (after "custom model id..." in the menu)
+	if m.customBuf {
+		m.input.SetValue("")
+		m.customBuf = false
+		m.input.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
+		if v != "" && m.pendingProvider != "" {
+			slug := m.pendingProvider + ":" + v
+			if m.pendingProvider == "openrouter" {
+				slug = "or:" + v
+			}
+			msg, err := m.agent.PickModel(slug)
+			if err != nil {
+				m.lines = append(m.lines, line{kind: "error", body: err.Error()})
+			} else if msg != "" {
+				m.lines = append(m.lines, line{kind: "info", body: msg})
+			}
+			m.pendingProvider = ""
+		}
+		return nil
+	}
+	if m.status.Spinning {
+		// never queue a second loop; keep the text for the next submit
+		if m.runActive && !m.busyNoticed {
+			m.busyNoticed = true
+			m.lines = append(m.lines, line{kind: "info", body: "agent is still working — esc interrupts, or wait for DONE"})
+		}
+		return nil
+	}
+	if splash {
+		m.splash = false
+	}
+	if strings.HasPrefix(v, "/") {
+		m.input.SetValue("")
+		return m.runSlash(v)
+	}
+	if !m.agent.Ready() {
+		m.lines = append(m.lines, line{kind: "error", body: "pick a model first — type / and choose model"})
+		m.over.openProviderMenu(m.agent.Keys())
+		return nil
+	}
+	m.input.SetValue("")
+	m.lines = append(m.lines, line{kind: "user", body: v})
+	m.beginRun()
+	return m.startPrompt(v)
+}
+
+// runSlash executes a slash command typed into the box (menu commands open
+// overlays; the rest go to the adapter).
+func (m *model) runSlash(v string) tea.Cmd {
+	if v == "/quit" || v == "/exit" {
+		m.quitting = true
+		return tea.Quit
+	}
+	switch v {
+	case "/model", "/provider":
+		m.over.openProviderMenu(m.agent.Keys())
+		return nil
+	case "/sessions":
+		m.over.openSessions(m.agent.Workspace())
+		return nil
+	case "/mode":
+		m.over.openModeMenu(m.agent.Status().Mode)
+		return nil
+	}
+	resp, err := m.agent.HandleSlash(v)
+	if err != nil {
+		m.lines = append(m.lines, line{kind: "error", body: err.Error()})
+	} else if resp != "" {
+		m.lines = append(m.lines, line{kind: "info", body: resp})
+	}
+	return nil
+}
+
+// beginRun starts the per-run timer and bumps the run sequence.
+func (m *model) beginRun() {
+	m.runSeq++
+	m.runStart = time.Now()
+	m.runActive = true
+	m.runLast = 0
+	m.turnNum = 0
+	m.hasDone = false
+	m.busyNoticed = false
+	m.status.Spinning = true
+	m.status.Elapsed = "0s"
+}
+
+// endRun freezes the timer at its last value (done banner + status bar).
+func (m *model) endRun() {
+	if m.runActive {
+		m.runLast = time.Since(m.runStart)
+	}
+	m.runActive = false
+	m.status.Elapsed = fmtDur(m.runLast)
 }
 
 // answerApproval resolves the pending approval modal synchronously so the
@@ -349,7 +373,7 @@ func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.over = overlay{}
-		m.input.Placeholder = "describe a task, WHIS handles the rest…  ( / for commands )"
+		m.input.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
 		return m, m.input.Focus()
 	case "up", "k":
 		if m.over.mode != overlayKeyInput {
@@ -379,9 +403,8 @@ func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) saveKeyAndContinue() (tea.Model, tea.Cmd) {
 	v := strings.TrimSpace(m.input.Value())
 	m.input.SetValue("")
-	m.input.EchoMode = textinput.EchoNormal
 	prov := m.over.provider
-	m.input.Placeholder = "describe a task, WHIS handles the rest…  ( / for commands )"
+	m.input.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
 	if v != "" {
 		m.agent.SaveKey(prov, v)
 		m.lines = append(m.lines, line{kind: "info", body: "key saved for " + prov})
@@ -425,7 +448,6 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		if pNeedsKey(prov) && m.agent.Keys()[prov] == "" {
 			m.over.openKeyInput(prov)
 			m.input.Placeholder = "paste API key for " + prov + " (enter to save, esc to cancel)"
-			m.input.EchoCharacter = '•'
 			return m, m.input.Focus()
 		}
 		m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
@@ -451,7 +473,7 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		}
 		slug := it.value
 		m.over = overlay{}
-		m.input.Placeholder = "describe a task, WHIS handles the rest…  ( / for commands )"
+		m.input.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
 		msg, err := m.agent.PickModel(slug)
 		if err != nil {
 			m.lines = append(m.lines, line{kind: "error", body: err.Error()})
@@ -468,7 +490,7 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		if err := m.agent.SetMode(it.value); err != nil {
 			m.lines = append(m.lines, line{kind: "error", body: err.Error()})
 		} else {
-			m.lines = append(m.lines, line{kind: "info", body: "mode → " + it.value})
+			m.lines = append(m.lines, line{kind: "info", body: "mode -> " + it.value})
 		}
 		return m, nil
 
@@ -499,51 +521,66 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// startPrompt launches the agent loop as a Bubble Tea command.
+// startPrompt launches the agent loop as a Bubble Tea command tagged with the
+// run sequence so stale chains are recognized and dropped.
 func (m model) startPrompt(prompt string) tea.Cmd {
+	seq := m.runSeq
 	evt, err := m.agent.Run(prompt)
 	if err != nil {
 		return func() tea.Msg {
-			return streamChunk{first: true, ev: TUIEvent{Type: "error", Text: err.Error()}, rest: make(chan TUIEvent)}
+			return streamChunk{first: true, seq: seq, ev: TUIEvent{Type: "error", Text: err.Error()}, rest: make(chan TUIEvent)}
 		}
 	}
 	return func() tea.Msg {
 		first, ok := <-evt
 		if !ok {
-			return streamDone{}
+			return streamDone{seq: seq}
 		}
-		return streamChunk{first: true, ev: first, rest: evt}
+		return streamChunk{first: true, seq: seq, ev: first, rest: evt}
 	}
 }
 
-// streamChunk carries one agent event; rest is the remaining channel.
+// streamChunk carries one agent event; rest is the remaining channel and seq
+// identifies the run this chain belongs to.
 type streamChunk struct {
 	first bool
+	seq   int
 	ev    TUIEvent
 	rest  <-chan TUIEvent
 }
 
-type streamDone struct{}
+// streamDone ends a run chain; stale ones (seq != current) are ignored.
+type streamDone struct {
+	seq int
+}
 
 type statusTick struct {
-	elapsed string
 	spinner string
 }
 
 func tickStatus() tea.Cmd {
 	return tea.Tick(statusInterval, func(time.Time) tea.Msg {
-		return statusTick{elapsed: elapsedString(startClock), spinner: nextSpinner()}
+		return statusTick{spinner: nextSpinner()}
 	})
 }
 
 // handleChunk folds an agent event into the transcript.
 func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
+	stale := sc.seq != m.runSeq
+	if stale {
+		// drain stale chains for a superseded run: drain silently
+		return m, waitMore(sc.rest, sc.seq)
+	}
+
 	ev := sc.ev
 	switch ev.Type {
 	case "reasoning":
 		m.planBuf += ev.Text
 	case "text":
 		m.streamBuf += ev.Text
+	case "plan":
+		m.planBuf = ev.Text
+		m.flushStream()
 	case "notice":
 		m.flushStream()
 		m.lines = append(m.lines, line{kind: "info", body: ev.Text})
@@ -553,11 +590,10 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "usage":
-		// live telemetry mid-run: update bars without waiting for turn end
+		// live telemetry mid-run
 		if ev.In > 0 || ev.Out > 0 {
 			m.status.In, m.status.Cached, m.status.Out = ev.In, ev.Cached, ev.Out
 			m.status.Cost += ev.Cost
-			m.status.Elapsed = fmt.Sprintf("%ds", int(time.Duration(ev.DurationMS)*time.Millisecond/time.Second)+1)
 		}
 		if ev.Turn > 0 {
 			m.turnNum = ev.Turn
@@ -573,12 +609,10 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		m.approveFn = ev.Approve
 	case "turn_done":
 		m.flushStream()
-		m.status.Spinning = false
 		m.status.In, m.status.Cached, m.status.Out = ev.In, ev.Cached, ev.Out
 		m.status.Cost += ev.Cost
-		if ev.DurationMS > 0 {
-			m.status.Elapsed = (time.Duration(ev.DurationMS) * time.Millisecond).Round(time.Second).String()
-		}
+		m.endRun()
+		m.status.Spinning = false
 		if strings.Contains(ev.Text, "DONE:") {
 			m.hasDone = true
 		} else if ev.Text == "" {
@@ -586,18 +620,20 @@ func (m model) handleChunk(sc streamChunk) (tea.Model, tea.Cmd) {
 		}
 	case "error":
 		m.flushStream()
+		m.endRun()
 		m.status.Spinning = false
 		m.lines = append(m.lines, line{kind: "error", body: ev.Text})
 	}
 	m.syncStatus()
 	if sc.first {
-		return m, tea.Batch(waitMore(sc.rest), tickStatus())
+		return m, tea.Batch(waitMore(sc.rest, sc.seq), tickStatus())
 	}
-	return m, waitMore(sc.rest)
+	return m, waitMore(sc.rest, sc.seq)
 }
 
 // flushStream commits buffered prose / plan as transcript lines. A final
-// line matching "DONE: ..." is lifted out and rendered as a completion banner.
+// line matching "DONE: ..." is lifted out and rendered as a completion banner
+// stamped with the run duration.
 func (m *model) flushStream() {
 	if m.streamBuf != "" {
 		body, summary := splitDone(m.streamBuf)
@@ -606,6 +642,7 @@ func (m *model) flushStream() {
 			m.lines = append(m.lines, line{kind: "md", body: body, n: m.mdSeq})
 		}
 		if summary != "" {
+			m.hasDone = true
 			m.lines = append(m.lines, line{kind: "done", body: summary})
 		}
 		m.streamBuf = ""
@@ -631,14 +668,14 @@ func splitDone(s string) (string, string) {
 	return s, ""
 }
 
-// waitMore schedules the next event read.
-func waitMore(rest <-chan TUIEvent) tea.Cmd {
+// waitMore schedules the next event read for chain seq.
+func waitMore(rest <-chan TUIEvent, seq int) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-rest
 		if !ok {
-			return streamDone{}
+			return streamDone{seq: seq}
 		}
-		return streamChunk{ev: ev, rest: rest}
+		return streamChunk{ev: ev, seq: seq, rest: rest}
 	}
 }
 
@@ -650,6 +687,7 @@ func (m *model) syncStatus() {
 	st := m.agent.Status()
 	m.status.Model = st.Model
 	m.status.Provider = st.Provider
+	m.status.Mode = st.Mode
 	m.status.Branch = st.Branch
 	m.status.CtxUsed = st.CtxUsed
 	m.status.CtxLimit = st.CtxLimit
@@ -665,6 +703,18 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
+// fmtDur renders a run duration compactly.
+func fmtDur(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
 // View renders the whole layout; never panics.
 func (m model) View() string { return m.safeView() }
 
@@ -678,7 +728,7 @@ func (m model) safeView() (s string) {
 		return "whis out.\n"
 	}
 	if m.width == 0 || m.agent == nil {
-		return "booting…"
+		return "booting..."
 	}
 	if m.splash {
 		return m.splashView()
@@ -687,8 +737,7 @@ func (m model) safeView() (s string) {
 }
 
 // menuBlock renders the active overlay as a full-width panel (plus the key
-// input inside it when entering a key). Width accounts for the border and
-// padding so the right edge always closes cleanly at the terminal edge.
+// input inside it when entering a key).
 func (m model) menuBlock() string {
 	body := m.over.view(m.width)
 	if m.over.mode == overlayKeyInput {
@@ -699,8 +748,8 @@ func (m model) menuBlock() string {
 	return menuPanelStyle.Width(inner).Render(body)
 }
 
-// splashView is the centered Claude-Code-style startup screen. The logo
-// remains while menus are open — the panel replaces only the lower half.
+// splashView is the centered startup screen. The logo remains while menus
+// are open — the panel replaces only the lower half.
 func (m model) splashView() string {
 	var rows []string
 	for i, row := range banner {
@@ -720,31 +769,37 @@ func (m model) splashView() string {
 
 	if m.over.mode != overlayNone {
 		content := lipgloss.JoinVertical(lipgloss.Left, bannerBlock, "", tag, "", m.menuBlock())
-		bodyH := clampInt(m.height-2, 3, m.height)
+		bodyH := clampInt(m.height-3, 3, m.height)
 		body := lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Top, content)
-		return body + "\n" + m.statusBar()
+		return body + "\n" + inpView(m) + "\n" + m.statusBar()
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Center, bannerBlock, "", tag, ver, "", modelLine, hints)
-	bodyH := clampInt(m.height-3, 3, m.height)
+	bodyH := clampInt(m.height-4, 3, m.height)
 	body := lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, content)
-	// border 2 cols = 2; inner width keeps total == m.width
-	inp := inputStyle.Width(clampInt(m.width-2, 20, m.width)).Render(m.input.View())
-	return body + "\n" + inp + "\n" + m.statusBar()
+	return body + "\n" + inpView(m) + "\n" + m.statusBar()
+}
+
+// inpView renders the full-width input box (border included in width math).
+func inpView(m model) string {
+	return inputStyle.Width(clampInt(m.width-2, 20, m.width)).Render(m.input.View())
 }
 
 // sessionView is the main layout after the first prompt.
 func (m model) sessionView() string {
 	var b strings.Builder
 
-	// header ribbon
+	// header ribbon: timer ONLY while the agent is working
 	left := fmt.Sprintf(" WHIS · %s", m.status.Model)
 	spin := ""
 	if m.status.Spinning {
 		spin = " " + m.status.Spinner
 	}
 	mode := m.agent.Status().Mode
-	right := fmt.Sprintf("%s · %s%s %s ", strings.ToUpper(mode), m.status.Branch, spin, m.status.Elapsed)
+	right := fmt.Sprintf("%s · %s%s ", strings.ToUpper(mode), m.status.Branch, spin)
+	if m.status.Spinning {
+		right += m.status.Elapsed + " "
+	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
@@ -752,12 +807,15 @@ func (m model) sessionView() string {
 	b.WriteString(headerStyle.Render(left) + strings.Repeat(" ", gap) + headerStyle.Render(right) + "\n")
 
 	// transcript viewport: auto-scroll to the newest output on every render
-	// so long agent runs never look "stuck" on old content.
-	m.vp.Width = m.width
-	m.vp.Height = clampInt(m.height-7, 3, m.height)
-	m.vp.SetContent(m.renderTranscript())
+	// so long agent runs never look "stuck" on old content. Height flexes
+	// with the input box so a wrapped, growing textarea never overflows.
+	vw := clampInt(m.width-2, 10, m.width) // 2 cols reserved for the scrollbar
+	m.vp.Width = vw
+	inRows := strings.Count(m.input.View(), "\n") + 1
+	m.vp.Height = clampInt(m.height-6-inRows, 3, m.height)
+	m.vp.SetContent(m.renderTranscript(vw))
 	m.vp.GotoBottom()
-	b.WriteString(m.vp.View() + "\n")
+	b.WriteString(vpWithScrollbar(m.vp) + "\n")
 
 	// approval modal
 	if m.approval != "" {
@@ -770,64 +828,98 @@ func (m model) sessionView() string {
 	if m.over.mode != overlayNone {
 		b.WriteString(m.menuBlock() + "\n")
 		return b.String() + m.statusBar()
-	} // full-width input box (border included in the width math)
-	b.WriteString(inputStyle.Width(clampInt(m.width-2, 20, m.width)).Render(m.input.View()) + "\n")
+	}
+	b.WriteString(inpView(m) + "\n")
 
-	// telemetry status bar
+	// simplified telemetry bar pinned right under the input
 	b.WriteString(m.statusBar())
 	return b.String()
 }
 
-// statusBar is the persistent telemetry bar: tokens, cache, cost, context
-// gauge, and the live turn counter + timer while the agent runs.
+// vpWithScrollbar renders the viewport with an ember scrollbar column.
+func vpWithScrollbar(vp viewport.Model) string {
+	view := vp.View()
+	total := maxInt(1, vp.TotalLineCount())
+	visible := maxInt(1, vp.Height)
+	if total <= visible {
+		return view // content fits: no scrollbar
+	}
+	track := vp.Height
+	thumb := maxInt(1, track*visible/total)
+	maxOff := maxInt(1, total-visible)
+	pos := 0
+	if maxOff > 0 {
+		pos = vp.YOffset * (track - thumb) / maxOff
+	}
+	if pos > track-thumb {
+		pos = track - thumb
+	}
+	lines := strings.Split(view, "\n")
+	for i := range lines {
+		if i >= track {
+			break
+		}
+		bar := scrollTrackStyle.Render("│")
+		if i >= pos && i < pos+thumb {
+			bar = scrollThumbStyle.Render("│")
+		}
+		lines[i] = lines[i] + bar
+	}
+	return strings.Join(lines, "\n")
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// statusBar is the simplified bottom bar: tokens used, run timer (while
+// working), and current mode — nothing else.
 func (m model) statusBar() string {
-	st := m.agent.Status()
-	in, cached, out, cost := st.In, st.Cached, st.Out, st.Cost
-	hitPct := 0
-	if in > 0 {
-		hitPct = cached * 100 / in
+	tok := m.status.In + m.status.Out
+	timer := ""
+	if m.status.Spinning {
+		timer = " · " + m.status.Elapsed + " · esc stops"
 	}
-	bar := fmt.Sprintf(" tokens %s/%s · cache %d%% · $%.4f · ctx %s",
-		commify(in), commify(out), hitPct, cost, ctxGauge(st.CtxUsed, st.CtxLimit))
-	if m.status.Spinning && m.turnNum > 0 {
-		bar += workingStyle.Render(fmt.Sprintf(" · turn %d · %s · esc to stop", m.turnNum, m.status.Elapsed))
-	}
+	mode := m.agent.Status().Mode
+	bar := fmt.Sprintf(" tok %s · mode %s%s", commify(tok), mode, timer)
 	return barStyle.Width(m.width - 1).MaxWidth(m.width - 1).Render(bar)
 }
 
 // renderTranscript renders all transcript lines with styling. Assistant md
 // lines render with code blocks collapsed (c expands the targeted block).
-func (m model) renderTranscript() string {
+func (m model) renderTranscript(vw int) string {
 	var parts []string
 	for _, l := range m.lines {
 		switch l.kind {
 		case "user":
 			parts = append(parts, badgeStyle.Render("you")+okStyle.Render(" "+l.body))
 		case "md":
-			parts = append(parts, renderCollapsible(l.body, m.width, m.codeOpenFor(l.n)))
+			parts = append(parts, renderCollapsible(l.body, vw, m.codeOpenFor(l.n)))
 		case "plan":
-			parts = append(parts, planStyle.Render(truncateLines(l.body, m.width-4, 8)))
+			parts = append(parts, planStyle.Render(truncateLines(l.body, vw-4, 8)))
 		case "tool":
 			parts = append(parts, toolStyle.Render("> "+l.body))
 		case "toolout":
 			parts = append(parts, diffStyle(l.body))
 		case "done":
-			elapsed := m.status.Elapsed
-			if elapsed == "" {
-				elapsed = "0s"
-			}
+			elapsed := fmtDur(m.runLast)
 			parts = append(parts, doneStyle.Render(" DONE ")+doneTextStyle.Render(" "+l.body+" ")+dimStyle.Render(" "+elapsed))
 		case "info":
 			parts = append(parts, dimStyle.Render("· "+l.body))
+		case "error":
+			parts = append(parts, errStyle.Render("x "+l.body))
 		}
 	}
 	if m.streamBuf != "" {
 		if m.status.Spinning {
 			// while working: show a live line count, not the dumping text
 			lines := strings.Count(strings.TrimSpace(m.streamBuf), "\n") + 1
-			parts = append(parts, workingStyle.Render(fmt.Sprintf("… composing reply (%d lines so far)", lines)))
+			parts = append(parts, workingStyle.Render(fmt.Sprintf("... composing reply (%d lines so far)", lines)))
 		} else {
-			parts = append(parts, renderCollapsible(m.streamBuf, m.width, m.codeOpenFor(-1)))
+			parts = append(parts, renderCollapsible(m.streamBuf, vw, m.codeOpenFor(-1)))
 		}
 	}
 	if len(parts) == 0 {
@@ -897,11 +989,11 @@ func diffStyle(s string) string {
 func truncateLines(s string, width, maxLines int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > maxLines {
-		lines = append(lines[:maxLines], fmt.Sprintf("… (+%d lines, Ctrl+P toggles plan pane)", len(lines)-maxLines))
+		lines = append(lines[:maxLines], fmt.Sprintf("... (+%d lines, Ctrl+P toggles plan pane)", len(lines)-maxLines))
 	}
 	for i, ln := range lines {
 		if width > 0 && len(ln) > width {
-			lines[i] = ln[:width] + "…"
+			lines[i] = ln[:width] + "..."
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -919,16 +1011,4 @@ func commify(n int) string {
 	}
 	out = append([]string{s}, out...)
 	return strings.Join(out, ",")
-}
-
-func ctxGauge(used, limit int) string {
-	if limit <= 0 {
-		return "—"
-	}
-	pct := used * 100 / limit
-	bars := pct / 5
-	if bars > 20 {
-		bars = 20
-	}
-	return "[" + strings.Repeat("█", bars) + strings.Repeat("░", 20-bars) + fmt.Sprintf(" %d%%", pct) + "]"
 }
