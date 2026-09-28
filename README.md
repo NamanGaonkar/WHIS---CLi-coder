@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/whis-mark.svg" alt="WHIS — token-surgical coding agent" width="560"/>
+<img src="whis.png" alt="WHIS — token-surgical coding agent" width="560"/>
 
 <img src="assets/whis-term.svg" alt="whis terminal session" width="620"/>
 
@@ -36,13 +36,6 @@ installed to a user bin dir, and PATH is set up for you. No Go, no sudo, no deps
 **Direct download** (if you prefer): grab `whis-windows-amd64.exe` (or your
 platform) from [Releases](https://github.com/NamanGaonkar/WHIS---CLi-coder/releases/latest)
 and put it on your `PATH`. Static binary, no runtime deps, no CGO.
-
-**Build from source:**
-
-```sh
-git clone https://github.com/NamanGaonkar/WHIS---CLi-coder && cd WHIS---CLi-coder
-go build -o whis ./cmd/whis
-```
 
 **Optional — real headless browser** (JS-rendered pages, bot-walled sites,
 verifying a live dev server):
@@ -142,17 +135,6 @@ Prompt → Plan → Tool invocation → Diff review → Terminal verification.
 (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, …) and writes a
 project guide with build/test commands that WHIS pins into its cached system
 prompt every session.
-
-## Development
-
-```sh
-git clone https://github.com/NamanGaonkar/WHIS---CLi-coder && cd WHIS---CLi-coder
-go build -o whis ./cmd/whis
-go test ./... && go vet ./...
-```
-
-Go 1.23+, zero CGO — `GOOS/GOARCH` cross-compiles anywhere. Tag `vX.Y.Z` and
-push: the release workflow builds 12 platform binaries automatically.
 
 ## License
 
