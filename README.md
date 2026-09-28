@@ -6,10 +6,11 @@
 
 [![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-FF9F1C.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/download-v0.2.0-FF9F1C)](https://github.com/NamanGaonkar/WHIS---CLi-coder/releases)
+[![Release](https://img.shields.io/badge/download-latest-FF9F1C)](https://github.com/NamanGaonkar/WHIS---CLi-coder/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20macOS%20%7C%20linux-2b2b2b)](https://github.com/NamanGaonkar/WHIS---CLi-coder/releases/latest)
 
 **Hyper-lean, token-surgical AI coding CLI with an overkill ember-on-black TUI.**
-BYO key. Local via Ollama or remote: DeepSeek · Anthropic · OpenAI · OpenRouter.
+BYO key. Local via Ollama or remote: DeepSeek · Anthropic · OpenAI · OpenRouter · Gemini · xAI · Mistral · Moonshot · Qwen · Z.ai · MiniMax · Groq.
 
 `whis` → type → ship. No setup wizard in your way.
 
@@ -19,11 +20,22 @@ BYO key. Local via Ollama or remote: DeepSeek · Anthropic · OpenAI · OpenRout
 
 ## Install
 
-**Windows / macOS / Linux — grab a static binary** (recommended, always current):
+**One command. Any machine.** (Windows PowerShell / macOS / Linux)
 
-Download `whis-windows-amd64.exe` (or your platform) from
-[Releases](https://github.com/NamanGaonkar/WHIS---CLi-coder/releases) and put it
-on your `PATH`. No runtime deps, no CGO.
+```powershell
+iwr https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.ps1 | iex
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.sh | sh
+```
+
+The right binary for your OS & CPU is picked automatically, **sha256-verified**,
+installed to a user bin dir, and PATH is set up for you. No Go, no sudo, no deps.
+
+**Direct download** (if you prefer): grab `whis-windows-amd64.exe` (or your
+platform) from [Releases](https://github.com/NamanGaonkar/WHIS---CLi-coder/releases/latest)
+and put it on your `PATH`. Static binary, no runtime deps, no CGO.
 
 **Build from source:**
 
@@ -57,9 +69,10 @@ No config gate, no boot errors, no forced wizard.
 ```
 
 **model** → pick a **provider** first (Ollama local, Ollama Cloud, DeepSeek,
-Anthropic, OpenAI, OpenRouter). Local providers list their installed models
-automatically; cloud providers ask for a key inline the first time (masked
-input, saved to `~/.whis/config.json`).
+Anthropic, OpenAI, OpenRouter, Gemini, xAI, Mistral, Moonshot, Qwen, Z.ai,
+MiniMax, Groq). Local providers list their installed models automatically; cloud
+providers fetch their live model list for your key and ask for the key inline
+the first time (masked input, saved to `~/.whis/config.json`).
 
 **provider** → add **or re-enter/edit** any provider key at any time — the
 menu shows a masked fingerprint of what you're replacing.
@@ -91,6 +104,7 @@ whis -init              # generate WHIS.md project guide
 | `run_command` | sandboxed shell in workspace root, output capped at 40 lines, hard timeout |
 | `search_codebase` | regex → `file:line` anchors |
 | `list_tree` | pruned tree (skips `.git`, `node_modules`, `.venv`, …) |
+| `memory_save` / `memory_recall` / `memory_forget` | persistent cross-session memory (`~/.whis/memory.json`) |
 
 The agent loop carries an **anti-repeat guard** (identical repeated tool calls
 get a cached result plus a STOP instruction — no endless loops) and a
@@ -116,7 +130,8 @@ Prompt → Plan → Tool invocation → Diff review → Terminal verification.
   snapshots in `~/.whis/undo` otherwise) — zero LLM tokens burned
 - `/task "…"` runs a context-isolated subagent; only its final summary
   reaches the main session
-- Sessions auto-snapshot to `~/.whis/sessions/` for pause/resume
+- Sessions auto-snapshot to `~/.whis/sessions/` (auto-titled after your first
+  prompt) for pause/resume
 - `browser` never touches loopback/LAN addresses (SSRF-safe), and the lazy
   Chromium launch fails with a helpful `whis browser-install` hint instead of
   crashing the session
@@ -132,12 +147,12 @@ prompt every session.
 
 ```sh
 git clone https://github.com/NamanGaonkar/WHIS---CLi-coder && cd WHIS---CLi-coder
-make build   # → ./whis
-make test vet
-make release # cross-compiled artifacts in dist/
+go build -o whis ./cmd/whis
+go test ./... && go vet ./...
 ```
 
-Go 1.23+, zero CGO — `GOOS/GOARCH` cross-compiles anywhere.
+Go 1.23+, zero CGO — `GOOS/GOARCH` cross-compiles anywhere. Tag `vX.Y.Z` and
+push: the release workflow builds 12 platform binaries automatically.
 
 ## License
 
