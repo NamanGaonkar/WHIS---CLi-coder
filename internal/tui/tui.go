@@ -184,6 +184,7 @@ type AgentAPI interface {
 	PickModel(slug string) (string, error)
 	SaveKey(provider, key string)
 	RetryPrompt() (string, bool)
+	LastAssistantText() string
 	ResumedTranscript() []TUILine
 	ResumeInfo() string
 	SetMode(mode string) error
@@ -472,6 +473,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toggleCodeBlocks()
 				return m, nil
 			}
+			if msg.String() == "ctrl+y" {
+				return m.copyLast()
+			}
 			if msg.String() == "ctrl+t" {
 				m.over.openThemes(curTheme)
 				return m, nil
@@ -660,6 +664,21 @@ func (m *model) submitPrompt(splash bool) tea.Cmd {
 	return m.startPrompt(sanitizeText(v))
 }
 
+// asCmd adapts a (model, cmd) pair to contexts that only need the cmd.
+func asCmd(_ tea.Model, cmd tea.Cmd) tea.Cmd { return cmd }
+
+// copyLast copies the newest reply/message to the clipboard (/copy, ctrl+y).
+func (m model) copyLast() (tea.Model, tea.Cmd) {
+	txt, ok := m.lastTranscriptText()
+	if !ok {
+		m.lines = append(m.lines, line{kind: "error", body: "nothing to copy yet — send a prompt first"})
+		return m, nil
+	}
+	resp, cmd := copyResult(txt)
+	m.lines = append(m.lines, line{kind: "info", body: resp})
+	return m, cmd
+}
+
 // runSlash executes a slash command typed into the box (menu commands open
 // overlays; the rest go to the adapter).
 func (m *model) runSlash(v string) tea.Cmd {
@@ -692,6 +711,8 @@ func (m *model) runSlash(v string) tea.Cmd {
 	case "/themes":
 		m.over.openThemes(curTheme)
 		return nil
+	case "/copy":
+		return asCmd(m.copyLast())
 	}
 	resp, err := m.agent.HandleSlash(v)
 	if err != nil {
@@ -872,6 +893,9 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 			m.pushOverlay()
 			m.over.openThemes(curTheme)
 			return m, nil
+		case "/copy":
+			m.over = overlay{}
+			return m.copyLast()
 		case "/retry":
 			m.over = overlay{}
 			if m.status.Spinning {

@@ -207,6 +207,7 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
   /retry          re-run the last prompt from scratch
   /compress       squash old tool logs to free context now
   /usage          token + cost + context usage for this session
+  /copy           copy the newest reply/message to the clipboard (ctrl+y)
   /init           (re)generate WHIS.md project guide
   /sessions       list saved sessions
   /memory         show remembered facts (survive all sessions)
@@ -217,7 +218,8 @@ keys:
   /       command menu (arrow keys or mouse click to pick)
   ?       theme picker
   Ctrl+T  theme picker        Ctrl+P  plan pane toggle
-  Ctrl+O  expand code blocks  Ctrl+C/D quit
+  Ctrl+O  expand code blocks  Ctrl+Y  copy last reply to clipboard
+  Ctrl+C/D quit
   y/n     approve diffs       esc     back one menu (main screen at root)
 memory:
   just say "remember that ..." — whis stores it permanently and knows it
@@ -371,6 +373,24 @@ func (ad *Adapter) RetryPrompt() (string, bool) {
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
 	return ad.A.RetryPrompt()
+}
+
+// LastAssistantText returns the newest assistant message body from the
+// session store (raw markdown, no ANSI) — used by /copy and ctrl+y so the
+// clipboard gets the SOURCE of the reply, not its rendered transcript form.
+func (ad *Adapter) LastAssistantText() string {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	if ad.A == nil || ad.A.Sess == nil {
+		return ""
+	}
+	msgs := ad.A.Sess.Messages
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 // contextUsed estimates tokens currently in the conversation.

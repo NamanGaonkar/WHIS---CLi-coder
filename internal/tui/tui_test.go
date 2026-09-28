@@ -15,8 +15,9 @@ import (
 
 // fakeAPI is a controllable AgentAPI for tests.
 type fakeAPI struct {
-	evs   chan TUIEvent
-	saved map[string]string
+	evs       chan TUIEvent
+	saved     map[string]string
+	lastReply string
 }
 
 func (f *fakeAPI) Run(prompt string) (<-chan TUIEvent, error) { return f.evs, nil }
@@ -40,6 +41,7 @@ func (f *fakeAPI) ResumedTranscript() []TUILine          { return nil }
 func (f *fakeAPI) ResumeInfo() string                    { return "" }
 func (f *fakeAPI) SetMode(mode string) error             { return nil }
 func (f *fakeAPI) Interrupt()                            {}
+func (f *fakeAPI) LastAssistantText() string             { return f.lastReply }
 
 func newTestModel(t *testing.T) model {
 	t.Helper()
