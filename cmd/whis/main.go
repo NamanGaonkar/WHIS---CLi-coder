@@ -35,12 +35,20 @@ func main() {
 		listFlag   = flag.Bool("l", false, "list saved sessions and exit")
 		initFlag   = flag.Bool("init", false, "generate WHIS.md project guide and exit")
 		undoFlag   = flag.Bool("undo", false, "roll back to the last whis snapshot and exit")
+		updateFlag = flag.Bool("update", false, "update whis to the latest release (accepts -update / --update / update)")
 		verFlag    = flag.Bool("version", false, "print version")
 	)
 	flag.Parse()
 
 	if *verFlag {
 		fmt.Println("whis", version)
+		return
+	}
+	// self-update: `whis update`, `whis -update` and `whis --update` all work
+	if *updateFlag {
+		if err := selfupdate.Run(version); err != nil {
+			fatal(err)
+		}
 		return
 	}
 
@@ -145,12 +153,12 @@ func main() {
 		if who == "" {
 			who = fmt.Sprintf("pid %d", he.Info.PID)
 		}
-		fmt.Printf("whis is already open for this folder: %s (pid %d), started %s\n", who, he.Info.PID, started)
-		fmt.Print("take over this folder? the other session will be saved and closed [y/N] ")
+		fmt.Printf("whis is already open on this device: %s (pid %d)\n  folder:  %s\n  started: %s\n", who, he.Info.PID, he.Info.Folder, started)
+		fmt.Print("take over? that saves and closes the other session, then opens whis here [y/N] ")
 		resp := ""
 		fmt.Scanln(&resp)
 		if !strings.EqualFold(strings.TrimSpace(resp), "y") {
-			fmt.Println("okay — staying out. close the other window (or answer y) to open whis here.")
+			fmt.Println("okay — staying out. close the other whis window (or answer y) to start one here.")
 			return
 		}
 		l, lerr = lock.RequestTakeover(root, 5*time.Second)

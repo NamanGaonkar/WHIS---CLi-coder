@@ -50,7 +50,7 @@ func Run(current string) error {
 	if err != nil {
 		return fmt.Errorf("cannot reach GitHub releases: %w", err)
 	}
-	if norm(current) == norm(latest) {
+	if !newer(current, latest) {
 		fmt.Printf("whis is up to date (%s).\n", current)
 		return nil
 	}
@@ -125,6 +125,38 @@ func assetName() string {
 }
 
 func norm(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "v") }
+
+// newer reports whether latest is strictly newer than current. Dev suffixes
+// ("v0.2.11-test") count as their base version, so a dev build never
+// "updates" itself down to an older published release.
+func newer(current, latest string) bool {
+	c, l := verNums(current), verNums(latest)
+	for i := 0; i < 3; i++ {
+		if l[i] != c[i] {
+			return l[i] > c[i]
+		}
+	}
+	return false
+}
+
+// verNums extracts the first three numeric components of a version string.
+func verNums(v string) [3]int {
+	var out [3]int
+	for i, part := range strings.SplitN(norm(v), ".", 3) {
+		if i >= 3 {
+			break
+		}
+		n := 0
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				break
+			}
+			n = n*10 + int(r-'0')
+		}
+		out[i] = n
+	}
+	return out
+}
 
 func download(url string, f *os.File) error {
 	c := &http.Client{} // no overall timeout: big binary, slow links

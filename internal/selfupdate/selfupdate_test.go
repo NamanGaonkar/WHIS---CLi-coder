@@ -17,6 +17,19 @@ func TestNorm(t *testing.T) {
 	}
 }
 
+func TestNewer(t *testing.T) {
+	for _, c := range []struct {
+		cur, lat string
+		want     bool
+	}{{"v0.2.9", "v0.2.10", true}, {"v0.2.10", "v0.2.10", false},
+		{"v0.2.11", "v0.2.10", false}, {"v0.2.11-test", "v0.2.10", false},
+		{"v0.2.9", "v0.3.0", true}, {"v1.0.0", "v0.9.9", false}, {"0.2.9", "0.10.0", true}} {
+		if got := newer(c.cur, c.lat); got != c.want {
+			t.Errorf("newer(%q, %q) = %v, want %v", c.cur, c.lat, got, c.want)
+		}
+	}
+}
+
 func TestAssetName(t *testing.T) {
 	n := assetName()
 	if !strings.HasPrefix(n, "whis-") || !strings.Contains(n, "-amd64") || !strings.Contains(n, "-arm") && !strings.Contains(n, "amd") {

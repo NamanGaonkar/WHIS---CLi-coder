@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	// isolate the lock dir so tests never fight a real running whis (the
+	// device lock is shared state)
+	tmp, err := os.MkdirTemp("", "whis-locks-test")
+	if err != nil {
+		panic(err)
+	}
+	dirOverride = func() string { return tmp }
+	code := m.Run()
+	os.RemoveAll(tmp)
+	os.Exit(code)
+}
+
 func TestTryHoldRelease(t *testing.T) {
 	folder := t.TempDir()
 
@@ -38,12 +51,16 @@ func TestTryHoldRelease(t *testing.T) {
 		t.Fatal("HeldError message is empty")
 	}
 
-	// a different folder must never be blocked
+	// device-wide rule: a different folder is blocked too — ONE session
+	// per machine, wherever it runs
 	l3, err := Try(filepath.Join(folder, "other"))
-	if err != nil {
-		t.Fatalf("different folder blocked: %v", err)
+	if err == nil {
+		l3.Release()
+		t.Fatal("second Try from a different folder should have been rejected (device-wide lock)")
 	}
-	l3.Release()
+	if _, ok := err.(*HeldError); !ok {
+		t.Fatalf("expected *HeldError for different folder, got %T: %v", err, err)
+	}
 
 	l.Release()
 	if _, err := os.Stat(l.path); !os.IsNotExist(err) {
@@ -84,6 +101,9 @@ func TestTakeoverRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// takeover works across folders: the request goes to the device lock,
+	// not to a folder
 
 	got := make(chan struct{}, 1)
 	holder.WatchForTakeover(func() { got <- struct{}{} })

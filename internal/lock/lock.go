@@ -1,25 +1,24 @@
-// Package lock guarantees a single whis session per workspace folder across
-// the whole device. A second window finds the lock, shows who holds it and
-// can TAKE OVER: a takeover request file politely tells the running session
-// to exit, the old window flushes its session and closes automatically.
+// Package lock guarantees ONE whis session per device (any folder). A second
+// window — even in a different project — finds the lock, sees who holds it
+// and where, and can TAKE OVER: a takeover request file politely tells the
+// running session to exit, the old window flushes its session and closes
+// automatically, and the new window opens in its own folder.
 package lock
 
 import (
-	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"whis/internal/config"
 )
 
-// Lock is an acquired per-folder session lock.
+// Lock is an acquired device-wide session lock.
 type Lock struct {
-	path    string // <lockdir>/<hash>.json
-	notify  string // <lockdir>/<hash>.takeover (watched by the holder)
+	path    string // <lockdir>/device.json
+	notify  string // <lockdir>/device.takeover (watched by the holder)
 	Folder  string
 	Info    Info
 	watched bool
@@ -34,29 +33,31 @@ type Info struct {
 	Started string `json:"started"`
 }
 
+// dirOverride lets tests isolate the lock directory (nil in production).
+var dirOverride func() string
+
 // dir is the shared lock directory (~/.whis/locks).
 func dir() string {
+	if dirOverride != nil {
+		d := dirOverride()
+		_ = os.MkdirAll(d, 0o755)
+		return d
+	}
 	d := filepath.Join(config.Dir(), "locks")
 	_ = os.MkdirAll(d, 0o755)
 	return d
 }
 
-// key hashes the absolute folder path into a filesystem-safe lock name.
-func key(folder string) string {
-	abs, err := filepath.Abs(folder)
-	if err != nil {
-		abs = folder
-	}
-	abs = strings.ToLower(strings.ReplaceAll(abs, "\\", "/"))
-	sum := sha1.Sum([]byte(abs))
-	return fmt.Sprintf("%x", sum)
-}
+// lockName is the fixed device-wide lock file name: whis allows only ONE
+// session on the whole machine, regardless of folder.
+func lockName() string { return "device" }
 
-// Try acquires the lock for folder. When another whis already holds it the
+// Try acquires the device-wide lock. The folder argument is recorded in the
+// lock info for display. When another whis already holds the lock the
 // returned error is *HeldError carrying the holder's info for the takeover UI.
 func Try(folder string) (*Lock, error) {
 	abs, _ := filepath.Abs(folder)
-	k := key(folder)
+	k := lockName()
 	l := &Lock{
 		path:   filepath.Join(dir(), k+".json"),
 		notify: filepath.Join(dir(), k+".takeover"),
@@ -111,13 +112,17 @@ func (e *HeldError) Error() string {
 	if e.Info.User != "" {
 		who = fmt.Sprintf("%s (pid %d)", e.Info.User, e.Info.PID)
 	}
-	return fmt.Sprintf("whis is already running for this folder: %s, started %s", who, e.Info.Started)
+	where := ""
+	if e.Info.Folder != "" {
+		where = fmt.Sprintf(" in %s", e.Info.Folder)
+	}
+	return fmt.Sprintf("whis is already running: %s%s, started %s", who, where, e.Info.Started)
 }
 
-// RequestTakeover asks the current holder to exit, waiting up to wait for it
-// to release the lock; then acquires it for the caller.
+// RequestTakeover asks the current holder (wherever it runs) to exit, waiting
+// up to wait for it to release the lock; then acquires it for the caller.
 func RequestTakeover(folder string, wait time.Duration) (*Lock, error) {
-	k := key(folder)
+	k := lockName()
 	notify := filepath.Join(dir(), k+".takeover")
 	lpath := filepath.Join(dir(), k+".json")
 	if err := os.WriteFile(notify, []byte("takeover"), 0o600); err != nil {
