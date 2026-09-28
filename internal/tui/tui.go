@@ -711,6 +711,11 @@ func (m *model) answerApproval(ok bool) {
 func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		// a type-to-search filter is cleared FIRST, then the menu pops back
+		if m.over.filter != "" {
+			m.over.clearFilter()
+			return m, nil
+		}
 		// walk BACK one menu level; only the root esc closes to the main screen
 		if n := len(m.stack); n > 0 {
 			m.over = m.stack[n-1]
@@ -760,7 +765,30 @@ func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 	}
+	// type-to-search on model/provider menus: printable runes refine the
+	// filter, backspace unwinds it. Runs AFTER key-nav so up/down/enter/esc
+	// keep their meanings. "j/k" are nav here, so only non-control runes
+	// that aren't handled above land in the filter.
+	if m.over.filterable && msg.Type == tea.KeyRunes && len(msg.String()) > 0 {
+		for _, r := range msg.String() {
+			m.over.typeFilter(r)
+		}
+		return m, nil
+	}
+	if msg.String() == "backspace" && m.over.filterable {
+		m.over.backspaceFilter()
+		return m, nil
+	}
 	return m, nil
+}
+
+// keyShape describes the expected prefix of each provider's API keys so a
+// bad paste is caught at entry time (not as a cryptic 401 later).
+var keyShape = map[string]string{
+	"openrouter": "sk-or-", "openai": "sk-", "deepseek": "sk-",
+	"anthropic": "sk-ant-", "groq": "gsk_", "xai": "xai-",
+	"gemini": "AQ.", "moonshot": "sk-", "mistral": "", "qwen": "sk-",
+	"zai": "", "minimax": "", "ollama-cloud": "",
 }
 
 // saveKeyAndContinue persists the entered API key, then shows the model list.
@@ -772,6 +800,13 @@ func (m model) saveKeyAndContinue() (tea.Model, tea.Cmd) {
 	if v != "" {
 		m.agent.SaveKey(prov, v)
 		m.lines = append(m.lines, line{kind: "info", body: "key saved for " + prov})
+		// instant sanity check: warn when the key does not match the vendor's
+		// known shape (the #1 cause of mysterious 401s on other machines)
+		if want := keyShape[prov]; want != "" && !strings.HasPrefix(v, want) {
+			m.lines = append(m.lines, line{kind: "error", body: fmt.Sprintf(
+				"hmm — %s keys normally start with %q, yours doesn't. if you get a 401, that's why: re-check the copy from the provider dashboard",
+				prov, want)})
+		}
 	}
 	m.pushOverlay()
 	cmd := m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())

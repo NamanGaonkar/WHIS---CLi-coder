@@ -392,6 +392,55 @@ func TestMouseClickSelectsSplashMenu(t *testing.T) {
 
 // TestMouseHoverMovesMenuCursor: moving the mouse over a menu row moves the
 // highlight there; hovering off the rows leaves the cursor alone.
+// Type-to-search: printable keys filter the model menu; esc clears the
+// filter before walking back; enter picks from the filtered set.
+func TestModelMenuTypeToSearch(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	mm := m2.(model)
+	if mm.over.mode != overlaySlashMenu {
+		t.Fatal("precondition: slash menu open")
+	}
+	// open the provider menu directly (deterministic — no menu-order deps)
+	mm.over.openProviderMenu(map[string]string{})
+	mmm := mm
+	if mmm.over.mode != overlayProvider {
+		t.Fatalf("precondition: provider menu open, got %v", mmm.over.mode)
+	}
+	before := len(mmm.over.items)
+	if before < 3 {
+		t.Fatalf("precondition: several provider rows, got %d", before)
+	}
+	// type a filter that matches only a subset ("oll" → ollama rows)
+	for _, r := range []rune("oll") {
+		m4, _ := mmm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		mmm = m4.(model)
+	}
+	if len(mmm.over.items) >= before {
+		t.Fatalf("filter should shrink the list: %d -> %d", before, len(mmm.over.items))
+	}
+	if mmm.over.filter != "oll" {
+		t.Fatalf("filter state = %q", mmm.over.filter)
+	}
+	for _, it := range mmm.over.items {
+		if !strings.Contains(strings.ToLower(it.label+it.hint), "oll") {
+			t.Fatalf("non-matching row survived: %q", it.label)
+		}
+	}
+	// esc clears the filter FIRST (full list returns), second esc pops level
+	m5, _ := mmm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm5 := m5.(model)
+	if mm5.over.filter != "" || len(mm5.over.items) != before {
+		t.Fatalf("esc should clear filter and restore list, filter=%q rows=%d", mm5.over.filter, len(mm5.over.items))
+	}
+	if mm5.over.mode != overlayProvider {
+		t.Fatalf("menu should stay open after clearing filter, mode=%v", mm5.over.mode)
+	}
+}
+
 func TestMouseWheelMovesMenuCursor(t *testing.T) {
 	m := newTestModel(t)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

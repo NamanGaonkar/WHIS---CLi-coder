@@ -76,7 +76,7 @@ func FetchModels(prov, key string) ([]ModelInfo, error) {
 	case "ollama-cloud":
 		return fetchOllamaCloudModels(key)
 	case "gemini":
-		return fetchOpenAIStyle("https://generativelanguage.googleapis.com/v1beta/openai/models", key, "gemini-", false)
+		return fetchGeminiModels(key)
 	case "xai":
 		return fetchOpenAIStyle("https://api.x.ai/v1/models", key, "grok", false)
 	case "mistral":
@@ -93,6 +93,81 @@ func FetchModels(prov, key string) ([]ModelInfo, error) {
 		return fetchOpenAIStyle("https://api.groq.com/openai/v1/models", key, "", false)
 	}
 	return nil, fmt.Errorf("unknown provider %q", prov)
+}
+
+// geminiModelsURL is a var so tests can point the fetcher at a stub.
+var geminiModelsURL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+// fetchGeminiModels lists models from Google's NATIVE v1beta endpoint.
+// The OpenAI-compat /openai/models path 404s for keyless/blocked callers,
+// which surfaced to users as a stuck "fetching live models…" row. The
+// native endpoint also wants the x-goog-api-key header, not Bearer.
+func fetchGeminiModels(key string) ([]ModelInfo, error) {
+	var raw struct {
+		Models []struct {
+			Name                       string   `json:"name"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+			InputTokenLimit            int      `json:"inputTokenLimit"`
+		} `json:"models"`
+	}
+	if err := httpGetJSONHeader(geminiModelsURL, "x-goog-api-key", key, &raw); err != nil {
+		return nil, err
+	}
+	var models []ModelInfo
+	for _, m := range raw.Models {
+		name := strings.TrimPrefix(m.Name, "models/")
+		if name == "" || !strings.HasPrefix(name, "gemini-") {
+			continue
+		}
+		chat := false
+		for _, meth := range m.SupportedGenerationMethods {
+			if meth == "generateContent" {
+				chat = true
+				break
+			}
+		}
+		if !chat { // embeddings/aiera-style rows are useless in whis
+			continue
+		}
+		// tts/image/video rows also expose generateContent but cannot code
+		if strings.Contains(name, "-tts") || strings.Contains(name, "imagen") ||
+			strings.Contains(name, "-image") || strings.Contains(name, "-native-audio") {
+			continue
+		}
+		models = append(models, ModelInfo{
+			ID:      name,
+			Slug:    "gemini:" + name,
+			Context: m.InputTokenLimit,
+		})
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no chat-capable gemini models returned")
+	}
+	return models, nil
+}
+
+// httpGetJSONHeader is httpGetJSON with an explicit auth header name
+// (Google-style native APIs use x-goog-api-key, not Bearer).
+func httpGetJSONHeader(url, header, key string, out any) error {
+	client := &http.Client{Timeout: fetchTimeout}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	if key != "" {
+		req.Header.Set(header, key)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
 }
 
 func httpGetJSON(url, key string, out any) error {

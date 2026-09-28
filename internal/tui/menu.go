@@ -47,7 +47,64 @@ type overlay struct {
 	lines    []string // free-text rows for overlayHelp
 	scroll   int      // help panel scroll offset
 	fetchRun int      // async /models fetch run guard (stale results dropped)
+	// type-to-search: printable keys typed while a searchable menu is open
+	// filter the rows (matched against label+hint, case-insensitive). The
+	// full row set lives in allItems; items is rebuilt on each keystroke so
+	// cursor moves / click hit-testing / wheel keep working unchanged.
+	filter     string
+	filterable bool
+	allItems   []menuItem
 }
+
+// setItems stores the full row set and re-applies any active filter.
+func (o *overlay) setItems(items []menuItem) {
+	o.allItems = items
+	o.refilter()
+}
+
+// refilter rebuilds the visible rows from allItems per the active filter.
+func (o *overlay) refilter() {
+	src := o.allItems
+	if src == nil {
+		src = o.items // menus that predate setItems
+	}
+	if !o.filterable || o.filter == "" {
+		o.items = src
+		if o.cursor >= len(o.items) {
+			o.cursor = len(o.items) - 1
+		}
+		if o.cursor < 0 {
+			o.cursor = 0
+		}
+		return
+	}
+	q := strings.ToLower(o.filter)
+	out := make([]menuItem, 0, len(src))
+	for _, it := range src {
+		if strings.Contains(strings.ToLower(stripANSI(it.label)), q) ||
+			strings.Contains(strings.ToLower(stripANSI(it.hint)), q) {
+			out = append(out, it)
+		}
+	}
+	o.items = out
+	o.cursor = 0
+}
+
+// typeFilter appends a typed rune to the search filter.
+func (o *overlay) typeFilter(r rune) { o.filter += string(r); o.refilter() }
+
+// backspaceFilter drops the last filter character.
+func (o *overlay) backspaceFilter() {
+	if o.filter == "" {
+		return
+	}
+	r := []rune(o.filter)
+	o.filter = string(r[:len(r)-1])
+	o.refilter()
+}
+
+// clearFilter resets the search and restores the full row set.
+func (o *overlay) clearFilter() { o.filter = ""; o.refilter() }
 
 // openHelp shows the help text in a scrollable panel instead of dumping it
 // into the chat transcript.
@@ -138,6 +195,7 @@ func (o *overlay) openProviderMenu(keys map[string]string) {
 	o.mode = overlayProvider
 	o.title = "SELECT PROVIDER"
 	o.cursor = 0
+	o.filterable, o.filter = true, "" // type-to-search
 	o.items = nil
 	for _, p := range provider.Providers() {
 		hint := "key missing"
@@ -155,6 +213,7 @@ func (o *overlay) openProviderMenu(keys map[string]string) {
 		label: "edit / re-enter a provider key", hint: "replace a saved key",
 		value: "@editkey",
 	})
+	o.allItems = o.items // snapshot full set for the filter
 }
 
 // openProviderEditMenu lists key-holding providers for key replacement.
@@ -164,6 +223,7 @@ func (o *overlay) openProviderEditMenu(keys map[string]string) {
 	o.mode = overlayProvider
 	o.title = "EDIT PROVIDER KEY"
 	o.cursor = 0
+	o.filterable, o.filter = true, "" // type-to-search
 	o.items = nil
 	for _, p := range provider.Providers() {
 		if !p.NeedsKey {
@@ -187,6 +247,7 @@ func (o *overlay) openModelMenu(prov string, keys map[string]string, current str
 	o.title = "SELECT MODEL · " + strings.ToUpper(prov)
 	o.provider = prov
 	o.cursor = 0
+	o.filterable, o.filter = true, "" // type-to-search
 	o.items = nil
 
 	// static catalog entries first so the menu is never empty
@@ -211,6 +272,7 @@ func (o *overlay) openModelMenu(prov string, keys map[string]string, current str
 	o.items = append(o.items, menuItem{
 		label: "fetching live models…", hint: "one moment", value: "@fetching", disabled: true,
 	})
+	o.allItems = o.items // snapshot full set for the filter
 	// async fetch OFF the UI thread; run number guards against stale results
 	o.fetchRun++
 	run := o.fetchRun
@@ -248,6 +310,7 @@ func (o *overlay) fillModelItems(prov, current string, st Status, models []provi
 	if prov == "openrouter" {
 		o.items = append(o.items, menuItem{label: "custom model id…", hint: "type vendor/name", value: "@custom"})
 	}
+	o.setItems(o.items) // route through setItems so any active filter re-applies
 	o.cursor = 0
 	for i, it := range o.items {
 		if it.selected {
@@ -484,7 +547,17 @@ func (o overlay) view(width, maxRows int) string {
 		}
 		return b.String()
 	}
-	b.WriteString(menuTitleStyle.Render(" "+o.title+" ") + "\n\n")
+	// searchable menus show the live filter in the title row — no extra
+	// geometry (title stays 1 row) so mouse hit-testing stays aligned.
+	title := o.title
+	if o.filterable {
+		fl := o.filter
+		if fl == "" {
+			fl = "type to search…"
+		}
+		title = fmt.Sprintf("%s  ·  search: %s", o.title, fl)
+	}
+	b.WriteString(menuTitleStyle.Render(" "+title+" ") + "\n\n")
 	// window long lists (big live /models catalogs); rows = budget minus the
 	// fixed rows (title + blank + blank + nav). Scroll indicator in the nav.
 	rows := maxRows - 4
@@ -493,6 +566,9 @@ func (o overlay) view(width, maxRows int) string {
 	}
 	lo, hi := o.itemWindow(rows)
 	windowed := hi-lo < len(o.items)
+	if len(o.items) == 0 && o.filter != "" {
+		b.WriteString(menuRowDisabledStyle.Render("no matches for \""+o.filter+"\"") + "\n")
+	}
 	for i := lo; i < hi; i++ {
 		it := o.items[i]
 		cursor := "  "

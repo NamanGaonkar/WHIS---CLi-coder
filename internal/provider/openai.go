@@ -168,8 +168,10 @@ type oaStreamRequest struct {
 	// capping thinking budget per run kind (reasoning tokens bill as output).
 	Thinking *oaThinking `json:"thinking,omitempty"`
 	Effort   string      `json:"reasoning_effort,omitempty"`
-	// OpenAI-style output cap.
-	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// OpenAI-style output cap. `max_tokens` is the universally-known field
+	// across OpenAI-compatible APIs; Google's Gemini compat layer REJECTS
+	// unknown root fields (max_output_tokens → "Cannot find field" 400).
+	MaxOutputTokens int `json:"max_tokens,omitempty"`
 }
 
 // oaThinking toggles DeepSeek reasoning; Effort picks the level.
@@ -212,6 +214,11 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+sanitizeKey(o.apiKey))
+	if o.name == "gemini" {
+		// Google honors x-goog-api-key natively; sending both keeps auth
+		// working whichever layer handles the request.
+		httpReq.Header.Set("x-goog-api-key", sanitizeKey(o.apiKey))
+	}
 	if o.name == "openrouter" {
 		httpReq.Header.Set("HTTP-Referer", "https://github.com/whis-cli/whis")
 		httpReq.Header.Set("X-Title", "WHIS")
