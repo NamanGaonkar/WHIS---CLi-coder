@@ -37,6 +37,22 @@ func NewOpenRouter(key, model string) *openaiCompatible {
 	return &openaiCompatible{name: "openrouter", apiKey: key, base: "https://openrouter.ai/api/v1", model: model, http: &http.Client{}}
 }
 
+// sanitizeKey neutralizes paste artifacts that make providers reject a
+// perfectly good key: surrounding quotes, trailing newlines/spaces and
+// zero-width characters dragged along by terminal/clipboard copies.
+// Valid keys pass through byte-identical.
+func sanitizeKey(k string) string {
+	k = strings.TrimSpace(k)
+	k = strings.Trim(k, "\"'“”‘’")
+	k = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7F || (r >= 0x200B && r <= 0x200F) || r == 0xFEFF {
+			return -1
+		}
+		return r
+	}, k)
+	return strings.TrimSpace(k)
+}
+
 // OpenAI-compatible vendors (2026-09 verified endpoints). All speak the
 // standard /chat/completions SSE dialect; key form differs per vendor:
 //   - gemini: API key works as a bare bearer token on the OpenAI-compat
@@ -193,7 +209,7 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+sanitizeKey(o.apiKey))
 	if o.name == "openrouter" {
 		httpReq.Header.Set("HTTP-Referer", "https://github.com/whis-cli/whis")
 		httpReq.Header.Set("X-Title", "WHIS")
@@ -205,7 +221,17 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s: HTTP %d: %s", o.name, resp.StatusCode, strings.TrimSpace(string(b)))
+		msg := strings.TrimSpace(string(b))
+		// turn auth failures into actionable hints for every key-based
+		// provider (openrouter/openai/mistral/groq/... share this client)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			if strings.TrimSpace(o.apiKey) == "" {
+				msg = "no API key was sent — set it via / → provider → " + o.name
+			} else {
+				msg = msg + " — the saved key was rejected: re-enter it via / → provider → edit key (whis sent 'Bearer ' + a key, so it reached the wrong/expired credential)"
+			}
+		}
+		return nil, fmt.Errorf("%s: HTTP %d: %s", o.name, resp.StatusCode, msg)
 	}
 	return &oaStream{resp: resp, sc: bufio.NewScanner(resp.Body)}, nil
 }

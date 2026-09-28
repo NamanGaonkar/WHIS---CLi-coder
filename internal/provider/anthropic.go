@@ -131,7 +131,7 @@ func (a *anthropic) Stream(ctx context.Context, model string, msgs []Message, to
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", a.apiKey)
+	httpReq.Header.Set("x-api-key", sanitizeKey(a.apiKey))
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	resp, err := a.http.Do(httpReq)
 	if err != nil {
@@ -140,7 +140,11 @@ func (a *anthropic) Stream(ctx context.Context, model string, msgs []Message, to
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("anthropic: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		msg := strings.TrimSpace(string(b))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			msg = msg + " — key rejected: re-enter it via / → provider → edit key"
+		}
+		return nil, fmt.Errorf("anthropic: HTTP %d: %s", resp.StatusCode, msg)
 	}
 	return &aStream{resp: resp, sc: bufio.NewScanner(resp.Body)}, nil
 }
