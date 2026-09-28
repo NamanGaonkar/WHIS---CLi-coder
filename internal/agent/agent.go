@@ -149,6 +149,38 @@ func NewUnbound(root string, auto bool) *Agent {
 // Bound reports whether a model is attached.
 func (a *Agent) Bound() bool { return a.Prov != nil }
 
+// ResetSession starts a fresh conversation in place (Hermes-inspired /new):
+// the current session is saved, a blank one takes over. Model, keys, memory
+// and the undo trail are untouched.
+func (a *Agent) ResetSession() string {
+	a.Sess.Save()
+	a.Sess = session.NewForRoot(a.Slug, a.Root)
+	a.titleSet = false
+	a.pendingNudge = ""
+	return "fresh session started — the old one is saved (whis -l lists it)"
+}
+
+// RetryPrompt rewinds the session to just before the last user message
+// (dropping any assistant reply after it) and returns that prompt for a
+// fresh attempt (Hermes-inspired /retry). Each call retries one step back.
+func (a *Agent) RetryPrompt() (string, bool) {
+	msgs := a.Sess.Messages
+	i := len(msgs) - 1
+	if i >= 0 && msgs[i].Role == "assistant" {
+		i--
+	}
+	if i < 0 || msgs[i].Role != "user" || strings.TrimSpace(msgs[i].Content) == "" {
+		return "", false
+	}
+	p := msgs[i].Content
+	a.Sess.Messages = msgs[:i]
+	return p, true
+}
+
+// CompactNow runs the context compactor immediately (Hermes-inspired
+// /compress) and reports how many oversized tool logs were squashed.
+func (a *Agent) CompactNow() int { return a.maybeCompact() }
+
 // installApprovals wires the tool env's AskApproval to emit approval events
 // on the active event stream. It must be re-armed by the loop for each turn.
 func (a *Agent) installApprovals() {

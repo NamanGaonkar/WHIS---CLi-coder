@@ -178,11 +178,35 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
 		return "persistent memories (survive all sessions):\n" + st.Digest(60000), nil
 	case "/sessions":
 		return strings.Join(session.List(), "\n"), nil
+	case "/new":
+		if !ad.A.Bound() {
+			return "", fmt.Errorf("no model selected — /model first")
+		}
+		return ad.A.ResetSession(), nil
+	case "/compress":
+		if !ad.A.Bound() {
+			return "", fmt.Errorf("no model selected — /model first")
+		}
+		if n := ad.A.CompactNow(); n > 0 {
+			return fmt.Sprintf("compressed: squashed %d oversized tool log(s) — context freed", n), nil
+		}
+		return "nothing to compress — context is already lean", nil
+	case "/usage":
+		if !ad.A.Bound() {
+			return "", fmt.Errorf("no model selected — /model first")
+		}
+		in, cached, out, cost := ad.A.Sess.Totals()
+		return fmt.Sprintf("tokens in=%d (cached %d) out=%d · cost so far $%.4f · context ≈%s / %s", in, cached, out, cost,
+			commify(contextUsed(ad.A.Sess)), commify(contextLimit(ad.A.Wire))), nil
 	case "/help":
 		return `commands:
   /model <slug>   hot-swap model — or just press / and pick from the menu
   /task <desc>    run an isolated subagent task
   /undo           roll back to the last pre-edit snapshot
+  /new            fresh conversation (old one saved)
+  /retry          re-run the last prompt from scratch
+  /compress       squash old tool logs to free context now
+  /usage          token + cost + context usage for this session
   /init           (re)generate WHIS.md project guide
   /sessions       list saved sessions
   /memory         show remembered facts (survive all sessions)
@@ -339,6 +363,14 @@ func (ad *Adapter) SaveKey(prov, key string) {
 	for k, v := range refresh {
 		ad.keys[k] = v
 	}
+}
+
+// RetryPrompt re-runs the last user prompt (Hermes-inspired /retry): the
+// transcript rewinds to just before that message and the loop starts over.
+func (ad *Adapter) RetryPrompt() (string, bool) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	return ad.A.RetryPrompt()
 }
 
 // contextUsed estimates tokens currently in the conversation.

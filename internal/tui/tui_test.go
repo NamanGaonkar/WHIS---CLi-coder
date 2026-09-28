@@ -33,6 +33,7 @@ func (f *fakeAPI) SaveKey(prov, key string) {
 	f.saved[prov] = key
 }
 func (f *fakeAPI) Workspace() string                     { return "/tmp" }
+func (f *fakeAPI) RetryPrompt() (string, bool)           { return "", false }
 func (f *fakeAPI) Ready() bool                           { return true }
 func (f *fakeAPI) PickModel(slug string) (string, error) { return "model → " + slug, nil }
 func (f *fakeAPI) ResumedTranscript() []TUILine          { return nil }
@@ -372,15 +373,28 @@ func TestMouseClickSelectsSplashMenu(t *testing.T) {
 		t.Fatal("precondition: slash menu open on splash")
 	}
 	v := m.View()
+	// The slash menu now has 17 rows and legitimately windows (scrolls) on a
+	// 30-row splash, so "themes" (last item) may be below the window. Scroll
+	// the menu down like a user (down-arrow) until the row renders, then use
+	// that rendered row for the click — real users do exactly this.
 	row := -1
-	for i, ln := range strings.Split(v, "\n") {
-		if strings.Contains(stripANSI(ln), "themes") {
-			row = i
+	for scans := 0; scans < len(m.over.items)+2; scans++ {
+		v = m.View()
+		row = -1
+		for i, ln := range strings.Split(v, "\n") {
+			if strings.Contains(stripANSI(ln), "themes") {
+				row = i
+				break
+			}
+		}
+		if row >= 0 {
 			break
 		}
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m2.(model)
 	}
 	if row < 0 {
-		t.Fatalf("themes row not visible in splash frame\nframe:\n%s", v)
+		t.Fatalf("themes row not visible in splash frame after scrolling\nframe:\n%s", v)
 	}
 	m2, _ := m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 10, Y: row})
 	mm := m2.(model)
@@ -476,14 +490,25 @@ func TestMouseHoverMovesMenuCursor(t *testing.T) {
 	if mm.over.mode != overlaySlashMenu {
 		t.Fatal("precondition: slash menu open")
 	}
-	// find the frame row of the themes item (it is the LAST slash item, so
-	// pin the cursor to the FIRST item first to guarantee a real move).
+	// find the frame row of the themes item. The slash menu now has 17 rows
+	// and windows on a 30-row screen, so "themes" (last item) may need a
+	// scroll first: walk the cursor down until it renders, then use that row.
 	v := mm.View()
 	row := -1
 	for i, ln := range strings.Split(v, "\n") {
 		if strings.Contains(stripANSI(ln), "themes") {
 			row = i
 			break
+		}
+	}
+	for row < 0 && mm.over.cursor < len(mm.over.items)-1 {
+		mm.over.cursor++
+		v = mm.View()
+		for i, ln := range strings.Split(v, "\n") {
+			if strings.Contains(stripANSI(ln), "themes") {
+				row = i
+				break
+			}
 		}
 	}
 	if row < 0 {

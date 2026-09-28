@@ -183,6 +183,7 @@ type AgentAPI interface {
 	Ready() bool
 	PickModel(slug string) (string, error)
 	SaveKey(provider, key string)
+	RetryPrompt() (string, bool)
 	ResumedTranscript() []TUILine
 	ResumeInfo() string
 	SetMode(mode string) error
@@ -281,6 +282,14 @@ func (m *model) syncViewport() {
 		// panel + 1 sep + (inRows+2) input + 1 blank + 1 status.
 		inRows := strings.Count(m.input.View(), "\n") + 1
 		bodyRows := m.over.bodyRows(inRows)
+		// cap the menu to what fits WITH the input visible — a menu taller
+		// than the screen pushed the input box off-screen entirely
+		if maxBody := m.height - inRows - 10; bodyRows > maxBody {
+			if maxBody < 4 {
+				maxBody = 4
+			}
+			bodyRows = maxBody // view() windows the items; menu scrolls
+		}
 		m.menuShed = 0
 		m.menuPAvail = bodyRows
 		if h := m.height - bodyRows - inRows - 12; h >= 3 {
@@ -520,8 +529,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Type MouseMotion with the cursor cell coordinates.
 		if msg.Type == tea.MouseMotion && m.over.mode != overlayNone && m.over.mode != overlayHelp && m.menuMaxRows > 0 {
 			rel := msg.Y - m.menuFirstRow
-			if rel >= 0 && rel < m.menuMaxRows && rel < len(m.over.items) && !m.over.items[rel].disabled && rel != m.over.cursor {
-				m.over.cursor = rel
+			// windowed menus render items[lo:hi]; a rendered row maps to item
+			// lo+rel (clicking "the 3rd visible row" is NOT items[3] when the
+			// list is scrolled)
+			lo, _ := m.over.itemWindow(m.menuMaxRows)
+			idx := lo + rel
+			if rel >= 0 && rel < m.menuMaxRows && idx < len(m.over.items) && !m.over.items[idx].disabled && idx != m.over.cursor {
+				m.over.cursor = idx
 			}
 			return m, nil
 		}
@@ -534,9 +548,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.lastClick = time.Now()
 			rel := msg.Y - m.menuFirstRow
-			if rel >= 0 && rel < m.menuMaxRows && rel < len(m.over.items) {
-				if !m.over.items[rel].disabled {
-					m.over.cursor = rel
+			// same windowing map as hover: rendered row -> lo+rel
+			lo, _ := m.over.itemWindow(m.menuMaxRows)
+			idx := lo + rel
+			if rel >= 0 && rel < m.menuMaxRows && idx < len(m.over.items) {
+				if !m.over.items[idx].disabled {
+					m.over.cursor = idx
 					return m.activateOverlay()
 				}
 			}
@@ -649,6 +666,18 @@ func (m *model) runSlash(v string) tea.Cmd {
 	if v == "/quit" || v == "/exit" {
 		m.quitting = true
 		return tea.Quit
+	}
+	// /retry starts a RUN (not just a message): rewind to the last user
+	// prompt and launch the loop again.
+	if v == "/retry" {
+		p, ok := m.agent.RetryPrompt()
+		if !ok {
+			m.lines = append(m.lines, line{kind: "error", body: "nothing to retry — no previous prompt in this session"})
+			return nil
+		}
+		m.lines = append(m.lines, line{kind: "user", body: sanitizeText(p) + "   (retry)"})
+		m.beginRun()
+		return m.startPrompt(sanitizeText(p))
 	}
 	switch v {
 	case "/model", "/provider":
@@ -843,6 +872,20 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 			m.pushOverlay()
 			m.over.openThemes(curTheme)
 			return m, nil
+		case "/retry":
+			m.over = overlay{}
+			if m.status.Spinning {
+				m.lines = append(m.lines, line{kind: "error", body: "agent is still working — esc interrupts first"})
+				return m, nil
+			}
+			p, ok := m.agent.RetryPrompt()
+			if !ok {
+				m.lines = append(m.lines, line{kind: "error", body: "nothing to retry — no previous prompt in this session"})
+				return m, nil
+			}
+			m.lines = append(m.lines, line{kind: "user", body: sanitizeText(p) + "   (retry)"})
+			m.beginRun()
+			return m, m.startPrompt(sanitizeText(p))
 		}
 		m.over = overlay{}
 		resp, err := m.agent.HandleSlash(cmd)
