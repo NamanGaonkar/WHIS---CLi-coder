@@ -552,6 +552,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// wheel over an open menu (model / provider / sessions / …) moves
+		// the selection — previously it fell through to the chat viewport
+		// and the menu seemed scroll-less.
+		if m.over.mode != overlayNone && m.menuMaxRows > 0 {
+			switch {
+			case msg.Type == tea.MouseWheelUp || msg.Button == tea.MouseButtonWheelUp:
+				m.over.move(-1)
+			case msg.Type == tea.MouseWheelDown || msg.Button == tea.MouseButtonWheelDown:
+				m.over.move(1)
+			}
+			return m, nil
+		}
 		switch {
 		case msg.Type == tea.MouseWheelUp || msg.Button == tea.MouseButtonWheelUp:
 			m.vp.LineUp(3)

@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"whis/internal/config"
 )
 
 // openaiCompatible covers OpenAI, DeepSeek and OpenRouter chat-completions APIs
@@ -222,13 +224,19 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := strings.TrimSpace(string(b))
-		// turn auth failures into actionable hints for every key-based
-		// provider (openrouter/openai/mistral/groq/... share this client)
+		// turn auth failures into actionable, evidence-based hints for every
+		// key-based provider (openrouter/openai/mistral/groq/... share this
+		// client): show WHAT was actually attached so "Missing Authentication
+		// header" from a garbage/empty stored key is instantly diagnosable.
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			if strings.TrimSpace(o.apiKey) == "" {
-				msg = "no API key was sent — set it via / → provider → " + o.name
-			} else {
-				msg = msg + " — the saved key was rejected: re-enter it via / → provider → edit key (whis sent 'Bearer ' + a key, so it reached the wrong/expired credential)"
+			sent := sanitizeKey(o.apiKey)
+			switch {
+			case sent == "":
+				msg = "whis attached NO usable key (the stored key is empty) — set it via / → provider → " + o.name
+			case len(sent) < 16:
+				msg = fmt.Sprintf("whis attached key %s which looks truncated/corrupt — re-enter the full key via / → provider → edit key", config.Mask(sent))
+			default:
+				msg = msg + " — whis attached key " + config.Mask(sent) + " and the provider rejected it: re-enter it via / → provider → edit key (or generate a new one)"
 			}
 		}
 		return nil, fmt.Errorf("%s: HTTP %d: %s", o.name, resp.StatusCode, msg)

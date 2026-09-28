@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -391,6 +392,31 @@ func TestMouseClickSelectsSplashMenu(t *testing.T) {
 
 // TestMouseHoverMovesMenuCursor: moving the mouse over a menu row moves the
 // highlight there; hovering off the rows leaves the cursor alone.
+func TestMouseWheelMovesMenuCursor(t *testing.T) {
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	mm := m2.(model)
+	if mm.over.mode != overlaySlashMenu {
+		t.Fatal("precondition: slash menu open")
+	}
+	mm.over.cursor = 0
+	// wheel over an open menu must move the SELECTION (previously it fell
+	// through to the chat viewport and the menu looked unscrollable)
+	m3, _ := mm.Update(tea.MouseMsg{Type: tea.MouseWheelDown})
+	mm = m3.(model)
+	if mm.over.cursor != 1 {
+		t.Fatalf("wheel down should move menu cursor to 1, got %d", mm.over.cursor)
+	}
+	m4, _ := mm.Update(tea.MouseMsg{Type: tea.MouseWheelUp})
+	mm = m4.(model)
+	if mm.over.cursor != 0 {
+		t.Fatalf("wheel up should move menu cursor back to 0, got %d", mm.over.cursor)
+	}
+}
+
 func TestMouseHoverMovesMenuCursor(t *testing.T) {
 	m := newTestModel(t)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -536,7 +562,26 @@ func TestModelMenuAsyncFetch(t *testing.T) {
 }
 
 // TestSessionsShowTaskCounts: /sessions hints carry the tool-exec count.
+// Hermetic: points HOME/USERPROFILE at a temp dir so the real ~/.whis
+// (live sessions from actual runs) can never influence the assertion.
 func TestSessionsShowTaskCounts(t *testing.T) {
+	tmp := t.TempDir()
+	oldHome, hadHome := os.LookupEnv("HOME")
+	oldProf, hadProf := os.LookupEnv("USERPROFILE")
+	os.Setenv("HOME", tmp)
+	os.Setenv("USERPROFILE", tmp)
+	defer func() {
+		if hadHome {
+			os.Setenv("HOME", oldHome)
+		} else {
+			os.Unsetenv("HOME")
+		}
+		if hadProf {
+			os.Setenv("USERPROFILE", oldProf)
+		} else {
+			os.Unsetenv("USERPROFILE")
+		}
+	}()
 	o := &overlay{}
 	o.openSessions("/no/such/root")
 	if len(o.items) != 1 || !o.items[0].disabled {
