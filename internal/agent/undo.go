@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,8 +11,13 @@ import (
 )
 
 // snapshotWorkspace creates a restore point before mutations. Prefers a git
-// shadow commit (no working-tree disruption); falls back to a plain tar-like
-// copy of tracked text files into ~/.whis/undo/<stamp>/.
+// marker ref (refs/whis/undo -> a no-pollution commit of the current tree);
+// falls back to a plain copy of workspace files into ~/.whis/undo/<stamp>/.
+// The ref survives unrelated user commits (unlike log-grep heuristics) and
+// lives outside refs/heads so it never shows up in the user's git log.
+// Alongside it we save a manifest of the untracked files that existed BEFORE
+// the agent ran — untracked files are invisible to git diff, and undo needs
+// to know which new files it may delete (only the agent's own).
 func snapshotWorkspace(root string) error {
 	if isGit(root) {
 		cmd := exec.Command("git", "add", "-A")
@@ -26,38 +32,151 @@ func snapshotWorkspace(root string) error {
 			"GIT_AUTHOR_NAME=whis", "GIT_AUTHOR_EMAIL=whis@local",
 			"GIT_COMMITTER_NAME=whis", "GIT_COMMITTER_EMAIL=whis@local")
 		if err := c.Run(); err != nil {
-			// nothing staged or commit failed; still fine
+			// nothing staged (clean tree) is fine; real failures fall back
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				return fallbackSnapshot(root)
+			}
 			return nil
+		}
+		// point the whis undo marker at the snapshot commit
+		ref := exec.Command("git", "update-ref", "refs/whis/undo", "HEAD")
+		ref.Dir = root
+		if err := ref.Run(); err == nil {
+			if sha := gitOut(root, "rev-parse", "HEAD"); sha != "" {
+				others := gitOut(root, "ls-files", "--others", "--exclude-standard")
+				_ = os.WriteFile(filepath.Join(undoDir(), sha+".untracked"), []byte(others), 0o644)
+			}
 		}
 		return nil
 	}
 	return fallbackSnapshot(root)
 }
 
-// Undo rolls back to the last restore point.
+// undoRef resolves the snapshot to roll back to: the whis marker ref first,
+// then (legacy) the newest whis-shadow commit found by log grep.
+func undoRef(root string) string {
+	if s := gitOut(root, "rev-parse", "--verify", "refs/whis/undo"); s != "" {
+		return s
+	}
+	return gitOut(root, "log", "--grep=whis-shadow-", "-1", "--format=%H")
+}
+
+// Undo rolls back the agent's changes SINCE the last snapshot. Only the
+// changed paths are touched: the user's own edits, their staged work and
+// their HEAD are never moved, and files they committed after the snapshot
+// are treated as theirs and skipped.
 func Undo(a *Agent) string {
 	root := a.Root
 	if isGit(root) {
-		// find last whis-shadow commit and hard-reset the *files* changed since
-		c := exec.Command("git", "log", "--grep=whis-shadow-", "-1", "--format=%H")
-		c.Dir = root
-		out, err := c.Output()
-		if err != nil || strings.TrimSpace(string(out)) == "" {
-			return "no whis snapshot found"
+		snap := undoRef(root)
+		if snap == "" {
+			return "no whis snapshot found — nothing to undo"
 		}
-		// Undo strategy: soft approach — diff working tree vs the snapshot and
-		// restore only paths present in it, without touching newer commits.
-		// Simpler robust approach: reset --hard to pre-shadow parent is too
-		// destructive; instead checkout the shadow's parent tree over the worktree.
-		parent := strings.TrimSpace(string(out)) + "^"
-		r := exec.Command("git", "checkout", parent, "--", ".")
-		r.Dir = root
-		if err := r.Run(); err != nil {
-			return "undo failed: " + err.Error()
+		// what differs between the snapshot and the CURRENT WORKTREE — this
+		// catches the agent's uncommitted edits AND deletions, which a
+		// commit-to-commit diff (HEAD vs snap) would miss entirely.
+		var restore []string
+		if out := gitOut(root, "diff", "--name-only", "-z", snap); out != "" {
+			inSnap := snapTree(root, snap)
+			for _, p := range strings.Split(out, "\x00") {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				if _, ok := inSnap[p]; ok {
+					restore = append(restore, p)
+				}
+				// tracked today but absent from the snapshot = committed by
+				// the user afterwards — theirs, never touched.
+			}
 		}
-		return "rolled back to snapshot"
+		// new untracked files are invisible to git diff; the manifest taken
+		// at snapshot time tells us which ones the agent created.
+		removed, canSweep := sweepList(root, snap)
+		if len(restore) == 0 && (!canSweep || len(removed) == 0) {
+			return "nothing to undo — workspace already matches the last snapshot"
+		}
+		if len(restore)+len(removed) > 2000 {
+			return fmt.Sprintf("undo aborted: %d files differ from the snapshot (implausible — refusing to bulk-restore)", len(restore)+len(removed))
+		}
+		// restore in arg-safe batches (Windows command-line length limits)
+		const batch = 200
+		for i := 0; i < len(restore); i += batch {
+			hi := i + batch
+			if hi > len(restore) {
+				hi = len(restore)
+			}
+			r := exec.Command("git", append([]string{"checkout", snap, "--"}, restore[i:hi]...)...)
+			r.Dir = root
+			if err := r.Run(); err != nil {
+				return "undo failed: " + err.Error()
+			}
+		}
+		for _, p := range removed {
+			_ = os.Remove(filepath.Join(root, p))
+		}
+		listed := restore
+		if len(listed) > 8 {
+			listed = append(append([]string{}, restore[:8]...), fmt.Sprintf("... (+%d more)", len(restore)-8))
+		}
+		msg := fmt.Sprintf("undone: restored %d file(s) to the last snapshot", len(restore))
+		if len(removed) > 0 {
+			msg += fmt.Sprintf(", removed %d file(s) whis created", len(removed))
+		}
+		if len(listed) > 0 {
+			msg += ":\n  " + strings.Join(listed, "\n  ")
+		}
+		return msg
 	}
 	return fallbackUndo(root)
+}
+
+// gitOut runs a git command and returns trimmed stdout, or "" on any error.
+func gitOut(root string, args ...string) string {
+	c := exec.Command("git", args...)
+	c.Dir = root
+	out, err := c.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// snapTree lists every path contained in the snapshot commit.
+func snapTree(root, snap string) map[string]bool {
+	set := map[string]bool{}
+	for _, p := range strings.Split(gitOut(root, "ls-tree", "-r", "--name-only", "-z", snap), "\x00") {
+		if p != "" {
+			set[p] = true
+		}
+	}
+	return set
+}
+
+// sweepList returns the untracked files that appeared AFTER the snapshot
+// (i.e. created by the agent) for undo to delete. The snapshot's manifest
+// is required: without one (legacy snapshot) nothing is deleted, to stay
+// safe with pre-existing untracked user files.
+func sweepList(root, snap string) (removed []string, ok bool) {
+	b, err := os.ReadFile(filepath.Join(undoDir(), snap+".untracked"))
+	if err != nil {
+		return nil, false
+	}
+	before := map[string]bool{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		if p := strings.TrimSpace(ln); p != "" {
+			before[p] = true
+		}
+	}
+	for _, ln := range strings.Split(gitOut(root, "ls-files", "--others", "--exclude-standard"), "\n") {
+		p := strings.TrimSpace(ln)
+		if p == "" || before[p] {
+			continue
+		}
+		removed = append(removed, p)
+	}
+	return removed, true
 }
 
 func isGit(root string) bool {

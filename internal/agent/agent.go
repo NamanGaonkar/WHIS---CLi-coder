@@ -61,6 +61,12 @@ type Agent struct {
 	// titleSet marks that the session already has a human title (first
 	// prompt of the run); later prompts never overwrite it.
 	titleSet bool
+
+	// pendingNudge is a TRANSIENT user-side instruction appended to the next
+	// buildMessages call (not persisted in the session). Used to jolt small
+	// local models that answer with an empty turn (no text, no tool call) —
+	// the classic "stuck at done, never replies" failure of 1-4B models.
+	pendingNudge string
 }
 
 // deriveTitle turns the first user prompt into a short session title
@@ -275,7 +281,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 		}
 		a.titleSet = true
 	}
-	out := make(chan Event, 64)
+	out := make(chan Event, 256) // token-level streams from slow local models must not block the loop
 	go a.loop(ctx, out, prompt)
 	return out, nil
 }
@@ -288,6 +294,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 		}
 	}()
 	start := time.Now()
+	nudges := 0
 
 	for turn := 0; turn < a.MaxTurn; turn++ {
 		msgs := a.buildMessages()
@@ -357,8 +364,25 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 			emit(out, Event{Type: "plan", Text: reason.String()})
 		}
 
-		// no tool calls => final answer
+		// no tool calls => final answer — UNLESS the reply is EMPTY (small
+		// local models do this when the tool list overwhelms them). Nudge
+		// up to twice, then fail loudly instead of a silent "done" stall.
 		if len(calls) == 0 {
+			if strings.TrimSpace(text.String()) == "" && strings.TrimSpace(reason.String()) == "" {
+				if nudges < 2 {
+					nudges++
+					_ = stream.Close()
+					a.pendingNudge = "[whis] your previous reply was EMPTY (no text, no tool call). " +
+						"Respond now: either call one of the provided tools to act, or write your answer " +
+						"to the user directly. Never return a blank message."
+					emit(out, Event{Type: "notice", Text: fmt.Sprintf("empty reply from model — nudging (%d/2)", nudges)})
+					continue
+				}
+				emit(out, Event{Type: "error", Text: "model returned three empty replies in a row. Small local models " +
+					"(1B-4B) often choke on large tool lists — try a bigger model (/model) or fewer tools."})
+				emit(out, Event{Type: "turn_done", Text: "", Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
+				return
+			}
 			emit(out, Event{Type: "turn_done", Text: text.String(), Turn: turn + 1, DurationMS: time.Since(start).Milliseconds()})
 			return
 		}
@@ -411,6 +435,10 @@ func (a *Agent) buildMessages() []provider.Message {
 			pm.ToolCalls = append(pm.ToolCalls, provider.ToolCall{ID: tc.ID, Name: tc.Name, Args: json.RawMessage(tc.Args)})
 		}
 		msgs = append(msgs, pm)
+	}
+	if a.pendingNudge != "" {
+		msgs = append(msgs, provider.Message{Role: "user", Content: a.pendingNudge})
+		a.pendingNudge = "" // transient: one-shot
 	}
 	return msgs
 }

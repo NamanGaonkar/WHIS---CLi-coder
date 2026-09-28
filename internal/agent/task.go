@@ -20,6 +20,10 @@ func Task(parent *Agent, ctx context.Context, description string) (string, error
 		Tools:   tool.NewEnv(parent.Root),
 		System:  parent.System + "\n\nMODE: subagent. You are running an isolated task. Work autonomously; your final message is the ONLY thing the parent session sees. Summarize outcome, files touched, and verification results tersely.",
 		MaxTurn: 25,
+		// CRITICAL: the anti-loop guard writes here; a nil map panics the
+		// subagent loop the first time the model repeats a call (the bug
+		// that made /task die with "internal error" before doing anything).
+		lastToolResult: map[string]tool.Result{},
 	}
 	sub.Tools.AutoApprove = parent.AutoApprove
 	sub.Tools.OnSnapshot = parent.snapshot // share undo trail

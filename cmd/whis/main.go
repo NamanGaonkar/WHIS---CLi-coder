@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"whis/internal/agent"
 	"whis/internal/config"
+	"whis/internal/lock"
 	"whis/internal/project"
 	"whis/internal/provider"
+	"whis/internal/selfupdate"
 	"whis/internal/session"
 	"whis/internal/tool"
 	"whis/internal/tui"
@@ -56,6 +59,12 @@ func main() {
 			fatal(err)
 		}
 		return
+	case "update":
+		// self-update the binary from GitHub Releases (public repo, no key)
+		if err := selfupdate.Run(version); err != nil {
+			fatal(err)
+		}
+		return
 	case "browser-install":
 		fmt.Println("downloading headless Chromium (one-time, ~90 MB)...")
 		if err := playwright.Install(&playwright.RunOptions{Browsers: []string{"chromium"}}); err != nil {
@@ -85,8 +94,15 @@ func main() {
 		return
 	}
 
-	// headless one-shot: model must resolve up front (no UI to pick from)
+	// headless one-shot: model must resolve up front (no UI to pick from).
+	// Still lock the folder (non-interactive: refuse, don't prompt) so a
+	// one-shot never double-books a folder the TUI already holds — keeps
+	// the provider API from getting hammered by parallel sessions. The
+	// lock auto-expires when this process exits (dead-pid sweep).
 	if *promptFlag != "" {
+		if _, lerr := lock.Try(root); lerr != nil {
+			fatal(lerr)
+		}
 		slug := *modelFlag
 		if slug == "" {
 			slug = cfg.Model
@@ -114,6 +130,39 @@ func main() {
 	}
 	adapter := tui.NewAdapter(a, keys)
 	adapter.Cfg = cfg
+	tui.Version = version // status bar shows the real build, not a stale default
+
+	// single-instance rule: one whis session per folder per device. A second
+	// window sees who holds the lock and may TAKE OVER — the request file
+	// tells the running session to save and close itself automatically.
+	l, lerr := lock.Try(root)
+	if he, held := lerr.(*lock.HeldError); held {
+		started := he.Info.Started
+		if t, perr := time.Parse(time.RFC3339, he.Info.Started); perr == nil {
+			started = t.Local().Format("Jan 2 15:04")
+		}
+		who := he.Info.User
+		if who == "" {
+			who = fmt.Sprintf("pid %d", he.Info.PID)
+		}
+		fmt.Printf("whis is already open for this folder: %s (pid %d), started %s\n", who, he.Info.PID, started)
+		fmt.Print("take over this folder? the other session will be saved and closed [y/N] ")
+		resp := ""
+		fmt.Scanln(&resp)
+		if !strings.EqualFold(strings.TrimSpace(resp), "y") {
+			fmt.Println("okay — staying out. close the other window (or answer y) to open whis here.")
+			return
+		}
+		l, lerr = lock.RequestTakeover(root, 5*time.Second)
+		if lerr != nil {
+			fatal(fmt.Errorf("takeover failed — the other window did not release the folder in time"))
+		}
+		fmt.Println("took over — the previous session was saved and closed.")
+	} else if lerr != nil {
+		fatal(lerr)
+	}
+	defer l.Release()
+
 	// clean up the browser engine (if the agent launched it) when the
 	// interactive session ends.
 	defer tool.CloseBrowser()
@@ -121,6 +170,10 @@ func main() {
 	// motion (CellMotion only reports while a button is held): without it the
 	// TUI never receives wheel events (scrollbar stays dead).
 	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// Watch for a takeover request from a newer window. p.Send is safe as
+	// soon as NewProgram returns (ctx is initialized there), so start the
+	// watcher before Run — the first request politely closes THIS session.
+	l.WatchForTakeover(func() { p.Send(tui.TakeoverMsg{}) })
 	if _, err := p.Run(); err != nil {
 		fatal(err)
 	}

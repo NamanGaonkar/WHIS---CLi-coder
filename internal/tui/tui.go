@@ -18,6 +18,11 @@ import (
 // Version is set from main at boot (release builds inject the tag).
 var Version = "0.1.4"
 
+// TakeoverMsg is sent to a running whis when another window takes over its
+// workspace folder (single-instance rule). The holder flushes its session
+// and exits politely; the takeover window then starts fresh.
+type TakeoverMsg struct{}
+
 // menuModelsLoaded replaces the open model menu's rows with the live
 // /models fetch result. Carries the request run number so a STALE fetch
 // (user reopened the menu for another provider meanwhile) is dropped.
@@ -466,6 +471,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.submitPrompt(false)
 			}
 		}
+
+	case TakeoverMsg:
+		// lost the folder to a new window: save everything, hand over, quit
+		m.flushStream()
+		m.endRun()
+		m.status.Spinning = false
+		m.lines = append(m.lines, line{kind: "info", body: "another whis window took over this folder — this session was saved and closed. Resume it with /sessions in the new window."})
+		return m, tea.Quit
 
 	case streamChunk:
 		return m.handleChunk(msg)
