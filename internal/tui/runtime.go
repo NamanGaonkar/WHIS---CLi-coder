@@ -313,11 +313,29 @@ func (ad *Adapter) SaveKey(prov, key string) {
 		ad.Cfg.Keys.OpenRouter = key
 	case "ollama-cloud":
 		ad.Cfg.Keys.OllamaCloud = key
+	case "gemini":
+		ad.Cfg.Keys.Gemini = key
+	case "xai":
+		ad.Cfg.Keys.XAI = key
+	case "mistral":
+		ad.Cfg.Keys.Mistral = key
+	case "moonshot":
+		ad.Cfg.Keys.Moonshot = key
+	case "qwen":
+		ad.Cfg.Keys.Qwen = key
+	case "zai":
+		ad.Cfg.Keys.Zai = key
+	case "minimax":
+		ad.Cfg.Keys.MiniMax = key
+	case "groq":
+		ad.Cfg.Keys.Groq = key
 	}
 	_ = ad.Cfg.Save()
 	// refresh the live map
 	refresh := provider.KeysMap(ad.Cfg.Keys.Anthropic, ad.Cfg.Keys.OpenAI,
 		ad.Cfg.Keys.DeepSeek, ad.Cfg.Keys.OpenRouter, ad.Cfg.Keys.OllamaCloud)
+	refresh["gemini"], refresh["xai"], refresh["mistral"], refresh["moonshot"] = ad.Cfg.Keys.Gemini, ad.Cfg.Keys.XAI, ad.Cfg.Keys.Mistral, ad.Cfg.Keys.Moonshot
+	refresh["qwen"], refresh["zai"], refresh["minimax"], refresh["groq"] = ad.Cfg.Keys.Qwen, ad.Cfg.Keys.Zai, ad.Cfg.Keys.MiniMax, ad.Cfg.Keys.Groq
 	for k, v := range refresh {
 		ad.keys[k] = v
 	}

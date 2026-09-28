@@ -287,7 +287,8 @@ func modelHint(prov string, m provider.ModelInfo) string {
 			return "cloud"
 		}
 		return strings.Join(parts, " · ")
-	case "anthropic", "openai", "deepseek", "ollama-cloud":
+	case "anthropic", "openai", "deepseek", "ollama-cloud", "gemini", "xai", "mistral",
+		"moonshot", "qwen", "zai", "minimax", "groq":
 		if m.Context > 0 {
 			return "cloud · " + commifyK(m.Context) + " ctx"
 		}
@@ -351,8 +352,20 @@ func (o *overlay) openSessions(root string) {
 		return
 	}
 	for _, s := range sums {
-		o.items = append(o.items, menuItem{label: s.Title, hint: s.Model, value: s.ID})
+		hint := s.Model
+		if s.Tasks > 0 {
+			hint = fmt.Sprintf("%d task%s · %s", s.Tasks, pluralS(s.Tasks), s.Model)
+		}
+		o.items = append(o.items, menuItem{label: s.Title, hint: hint, value: s.ID})
 	}
+}
+
+// pluralS is the one-letter pluralizer (1 task / 2 tasks).
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // move shifts the cursor to the next selectable row; returns true if moved.
@@ -377,7 +390,8 @@ func (o *overlay) move(d int) bool {
 
 // bodyRows returns the rendered body height (rows inside the panel border)
 // for the current overlay. inRows is the textarea's row count, needed when
-// the key-entry form is embedded. Capped at 40 like every row budget.
+// the key-entry form is embedded. Item menus WINDOW their rows (scroll);
+// the cap of 40 bounds the panel size on huge model lists.
 func (o *overlay) bodyRows(inRows int) int {
 	if o.mode == overlayNone {
 		return 0
@@ -390,6 +404,9 @@ func (o *overlay) bodyRows(inRows int) int {
 		if len(o.items) > 0 {
 			n++ // blank before the nav row
 		}
+		if n > 40 {
+			n = 40 // windowed: title + blank + 36 items + blank + nav
+		}
 	}
 	if o.mode == overlayKeyInput {
 		n += 2 + inRows // blank + blank + the embedded input view
@@ -398,6 +415,27 @@ func (o *overlay) bodyRows(inRows int) int {
 		n = 1
 	}
 	return clampInt(n, 1, 40)
+}
+
+// itemWindow returns the [lo,hi) slice of items visible given the body-row
+// budget, keeping the cursor on screen. rows = maxRows - 4 fixed rows
+// (title + blank + blank + nav).
+func (o *overlay) itemWindow(rows int) (int, int) {
+	total := len(o.items)
+	if rows < 1 {
+		rows = 1
+	}
+	if total <= rows {
+		return 0, total
+	}
+	lo := o.cursor - rows + 1 // keep the cursor visible (bottom-biased)
+	if lo > total-rows {
+		lo = total - rows
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	return lo, lo + rows
 }
 
 // current returns the highlighted item.
@@ -441,7 +479,16 @@ func (o overlay) view(width, maxRows int) string {
 		return b.String()
 	}
 	b.WriteString(menuTitleStyle.Render(" "+o.title+" ") + "\n\n")
-	for i, it := range o.items {
+	// window long lists (big live /models catalogs); rows = budget minus the
+	// fixed rows (title + blank + blank + nav). Scroll indicator in the nav.
+	rows := maxRows - 4
+	if rows < 1 {
+		rows = 1
+	}
+	lo, hi := o.itemWindow(rows)
+	windowed := hi-lo < len(o.items)
+	for i := lo; i < hi; i++ {
+		it := o.items[i]
 		cursor := "  "
 		style := menuRowStyle
 		if i == o.cursor {
@@ -463,6 +510,9 @@ func (o overlay) view(width, maxRows int) string {
 		b.WriteString(cursor + style.Render(label) + "  " + menuHintStyle.Render(hint) + "\n")
 	}
 	nav := "\nup/down move · enter select · esc back"
+	if windowed {
+		nav = fmt.Sprintf("\n%d-%d of %d · up/down scrolls", lo+1, hi, len(o.items))
+	}
 	switch o.mode {
 	case overlaySlashMenu:
 		nav = "\nup/down move · enter run · esc back"

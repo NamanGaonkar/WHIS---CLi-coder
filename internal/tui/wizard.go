@@ -49,6 +49,14 @@ var wizardSteps = []struct {
 	{"OpenAI", "GPT models", "WHIS_OPENAI_KEY"},
 	{"OpenRouter", "any model, one key", "WHIS_OPENROUTER_KEY"},
 	{"Ollama Cloud", "ollama.com API key (optional)", "WHIS_OLLAMA_KEY"},
+	{"Google Gemini", "gemini-3.8-flash · long-horizon coding pick", "WHIS_GEMINI_KEY"},
+	{"xAI (Grok)", "grok-4.7 · 500k ctx flagship (console.x.ai)", "WHIS_XAI_KEY"},
+	{"Mistral", "mistral-medium-3-5 · agentic frontier", "WHIS_MISTRAL_KEY"},
+	{"Moonshot (Kimi)", "kimi-k3 · 1M ctx (platform.kimi.ai)", "WHIS_MOONSHOT_KEY"},
+	{"Qwen (Alibaba)", "qwen3.7-plus · international console keys", "WHIS_QWEN_KEY"},
+	{"Z.ai (GLM)", "glm-5.2 · 1M ctx long-horizon", "WHIS_ZAI_KEY"},
+	{"MiniMax", "MiniMax-M3 flagship", "WHIS_MINIMAX_KEY"},
+	{"Groq", "openai/gpt-oss-120b · fast open models", "WHIS_GROQ_KEY"},
 }
 
 func newWizard() wizard {
@@ -106,6 +114,22 @@ func (w wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					w.cfg.Keys.OpenRouter = pick(w.cfg.Keys.OpenRouter, v)
 				case 4:
 					w.cfg.Keys.OllamaCloud = pick(w.cfg.Keys.OllamaCloud, v)
+				case 5:
+					w.cfg.Keys.Gemini = pick(w.cfg.Keys.Gemini, v)
+				case 6:
+					w.cfg.Keys.XAI = pick(w.cfg.Keys.XAI, v)
+				case 7:
+					w.cfg.Keys.Mistral = pick(w.cfg.Keys.Mistral, v)
+				case 8:
+					w.cfg.Keys.Moonshot = pick(w.cfg.Keys.Moonshot, v)
+				case 9:
+					w.cfg.Keys.Qwen = pick(w.cfg.Keys.Qwen, v)
+				case 10:
+					w.cfg.Keys.Zai = pick(w.cfg.Keys.Zai, v)
+				case 11:
+					w.cfg.Keys.MiniMax = pick(w.cfg.Keys.MiniMax, v)
+				case 12:
+					w.cfg.Keys.Groq = pick(w.cfg.Keys.Groq, v)
 				}
 				w.step++
 				if w.step < len(w.inputs) {

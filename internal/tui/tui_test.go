@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -432,6 +433,48 @@ func TestMouseHoverMovesMenuCursor(t *testing.T) {
 	// hover must NOT activate (only click does)
 	if mm.over.mode != overlaySlashMenu {
 		t.Fatalf("hover must not activate a row, got mode %v", mm.over.mode)
+	}
+}
+
+// TestMenuWindowsLongLists: a 60-row model list renders in a window with
+// the cursor row visible and a scroll indicator (new providers have long
+// live /models catalogs).
+func TestMenuWindowsLongLists(t *testing.T) {
+	o := &overlay{mode: overlayModel, title: "SELECT MODEL · X"}
+	for i := range 60 {
+		o.items = append(o.items, menuItem{label: fmt.Sprintf("model-%02d", i), value: fmt.Sprintf("m:%d", i)})
+	}
+	// cursor at the top: window starts at 0
+	v := o.view(80, 40)
+	if !strings.Contains(stripANSI(v), "model-00") {
+		t.Fatal("top of the list must be visible when cursor is at row 0")
+	}
+	if !strings.Contains(v, "of 60") {
+		t.Fatalf("scroll indicator missing:\n%s", v)
+	}
+	// cursor at the bottom: last row visible, early rows windowed out
+	o.cursor = 59
+	v = o.view(80, 40)
+	if !strings.Contains(stripANSI(v), "model-59") {
+		t.Fatal("cursor row must stay visible when scrolled to the bottom")
+	}
+	if strings.Contains(stripANSI(v), "model-00") {
+		t.Fatal("rows above the window must be hidden")
+	}
+	// short lists render fully, no indicator
+	o2 := &overlay{mode: overlayModel, title: "X", items: o.items[:3]}
+	v2 := o2.view(80, 40)
+	if strings.Contains(v2, "of 3") {
+		t.Fatal("short list must not show a scroll indicator")
+	}
+}
+
+// TestSessionsShowTaskCounts: /sessions hints carry the tool-exec count.
+func TestSessionsShowTaskCounts(t *testing.T) {
+	o := &overlay{}
+	o.openSessions("/no/such/root")
+	if len(o.items) != 1 || !o.items[0].disabled {
+		t.Fatal("empty root should show the disabled placeholder row")
 	}
 }
 

@@ -58,6 +58,10 @@ type Summary struct {
 	ID    string
 	Title string
 	Model string
+	// Tasks counts tool executions recorded in the session (every run
+	// command / file edit / fetch the agent performed) — shown in the
+	// sessions menu as a quick "what happened here" signal.
+	Tasks int
 }
 
 // ListFor returns sessions belonging to a workspace root, newest first.
@@ -77,7 +81,13 @@ func ListFor(root string) []Summary {
 		} else if s.Root != "" {
 			continue
 		}
-		out = append(out, Summary{ID: s.ID, Title: s.Title, Model: s.Model})
+		tasks := 0
+		for _, m := range s.Messages {
+			if m.Role == "tool" {
+				tasks++
+			}
+		}
+		out = append(out, Summary{ID: s.ID, Title: s.Title, Model: s.Model, Tasks: tasks})
 	}
 	return out
 }

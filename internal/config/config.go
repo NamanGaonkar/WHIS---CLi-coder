@@ -18,6 +18,14 @@ type Keys struct {
 	DeepSeek    string `json:"deepseek,omitempty"`
 	OpenRouter  string `json:"openrouter,omitempty"`
 	OllamaCloud string `json:"ollama_cloud,omitempty"`
+	Gemini      string `json:"gemini,omitempty"`
+	XAI         string `json:"xai,omitempty"`
+	Mistral     string `json:"mistral,omitempty"`
+	Moonshot    string `json:"moonshot,omitempty"`
+	Qwen        string `json:"qwen,omitempty"`
+	Zai         string `json:"zai,omitempty"`
+	MiniMax     string `json:"minimax,omitempty"`
+	Groq        string `json:"groq,omitempty"`
 }
 
 // Config is the on-disk WHIS configuration.
@@ -67,6 +75,14 @@ func (c *Config) ApplyEnv() {
 	c.Keys.DeepSeek = envOr(c.Keys.DeepSeek, "WHIS_DEEPSEEK_KEY")
 	c.Keys.OpenRouter = envOr(c.Keys.OpenRouter, "WHIS_OPENROUTER_KEY")
 	c.Keys.OllamaCloud = envOr(c.Keys.OllamaCloud, "WHIS_OLLAMA_KEY")
+	c.Keys.Gemini = envOr(c.Keys.Gemini, "WHIS_GEMINI_KEY")
+	c.Keys.XAI = envOr(c.Keys.XAI, "WHIS_XAI_KEY")
+	c.Keys.Mistral = envOr(c.Keys.Mistral, "WHIS_MISTRAL_KEY")
+	c.Keys.Moonshot = envOr(c.Keys.Moonshot, "WHIS_MOONSHOT_KEY")
+	c.Keys.Qwen = envOr(c.Keys.Qwen, "WHIS_QWEN_KEY")
+	c.Keys.Zai = envOr(c.Keys.Zai, "WHIS_ZAI_KEY")
+	c.Keys.MiniMax = envOr(c.Keys.MiniMax, "WHIS_MINIMAX_KEY")
+	c.Keys.Groq = envOr(c.Keys.Groq, "WHIS_GROQ_KEY")
 	if v := os.Getenv("WHIS_MODEL"); v != "" && c.Model == "" {
 		c.Model = v
 	}
@@ -100,6 +116,22 @@ func EnvKey(provider string) string {
 		return os.Getenv("WHIS_DEEPSEEK_KEY")
 	case "openrouter":
 		return os.Getenv("WHIS_OPENROUTER_KEY")
+	case "gemini":
+		return os.Getenv("WHIS_GEMINI_KEY")
+	case "xai":
+		return os.Getenv("WHIS_XAI_KEY")
+	case "mistral":
+		return os.Getenv("WHIS_MISTRAL_KEY")
+	case "moonshot":
+		return os.Getenv("WHIS_MOONSHOT_KEY")
+	case "qwen":
+		return os.Getenv("WHIS_QWEN_KEY")
+	case "zai":
+		return os.Getenv("WHIS_ZAI_KEY")
+	case "minimax":
+		return os.Getenv("WHIS_MINIMAX_KEY")
+	case "groq":
+		return os.Getenv("WHIS_GROQ_KEY")
 	}
 	return ""
 }
@@ -118,6 +150,22 @@ func (c *Config) ResolveKey(provider string) string {
 		return c.Keys.DeepSeek
 	case "openrouter":
 		return c.Keys.OpenRouter
+	case "gemini":
+		return c.Keys.Gemini
+	case "xai":
+		return c.Keys.XAI
+	case "mistral":
+		return c.Keys.Mistral
+	case "moonshot":
+		return c.Keys.Moonshot
+	case "qwen":
+		return c.Keys.Qwen
+	case "zai":
+		return c.Keys.Zai
+	case "minimax":
+		return c.Keys.MiniMax
+	case "groq":
+		return c.Keys.Groq
 	}
 	return ""
 }

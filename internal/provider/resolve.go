@@ -105,6 +105,54 @@ func Resolve(slug string, keys map[string]string) (Provider, string, Prices, err
 			return nil, wire, pr, fmt.Errorf("no OpenRouter key (run `whis init` or set WHIS_OPENROUTER_KEY)")
 		}
 		return NewOpenRouter(k, wire), wire, pr, nil
+	case "gemini":
+		k := keys["gemini"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no Gemini key (run `whis init` or set WHIS_GEMINI_KEY)")
+		}
+		return NewGemini(k, wire), wire, pr, nil
+	case "xai":
+		k := keys["xai"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no xAI key (get one at console.x.ai)")
+		}
+		return NewXAI(k, wire), wire, pr, nil
+	case "mistral":
+		k := keys["mistral"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no Mistral key (run `whis init`)")
+		}
+		return NewMistral(k, wire), wire, pr, nil
+	case "moonshot":
+		k := keys["moonshot"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no Moonshot key (platform.kimi.ai; Coding-plan keys differ)")
+		}
+		return NewMoonshot(k, wire), wire, pr, nil
+	case "qwen":
+		k := keys["qwen"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no Qwen key (international Model Studio console)")
+		}
+		return NewQwen(k, wire), wire, pr, nil
+	case "zai":
+		k := keys["zai"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no Z.ai key (z.ai Model API)")
+		}
+		return NewZai(k, wire), wire, pr, nil
+	case "minimax":
+		k := keys["minimax"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no MiniMax key (platform.minimax.io)")
+		}
+		return NewMiniMax(k, wire), wire, pr, nil
+	case "groq":
+		k := keys["groq"]
+		if k == "" {
+			return nil, wire, pr, fmt.Errorf("no Groq key (console.groq.com)")
+		}
+		return NewGroq(k, wire), wire, pr, nil
 	case "ollama":
 		return NewOllama(wire), wire, pr, nil
 	case "ollama-cloud":
@@ -123,6 +171,16 @@ func KeysMap(anthropic, openai, deepseek, openrouter, ollamaCloud string) map[st
 		"anthropic": anthropic, "openai": openai, "deepseek": deepseek,
 		"openrouter": openrouter, "ollama-cloud": ollamaCloud,
 	}
+}
+
+// SetKeysMap returns the full 13-provider key map for Resolve().
+func SetKeysMap(keys map[string]string) map[string]string {
+	for _, p := range []string{"gemini", "xai", "mistral", "moonshot", "qwen", "zai", "minimax", "groq"} {
+		if _, ok := keys[p]; !ok {
+			keys[p] = ""
+		}
+	}
+	return keys
 }
 
 // PipingContext is a context for headless runs (exported so main can pass one).

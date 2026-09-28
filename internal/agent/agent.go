@@ -57,6 +57,34 @@ type Agent struct {
 	// (name + args) so an identical repeat never re-executes and the model
 	// gets a STOP instruction instead of looping forever.
 	lastToolResult map[string]tool.Result
+
+	// titleSet marks that the session already has a human title (first
+	// prompt of the run); later prompts never overwrite it.
+	titleSet bool
+}
+
+// deriveTitle turns the first user prompt into a short session title
+// (LOCAL string surgery only — no API call, no token burn). Long prompts
+// collapse to their first meaningful line, trimmed to ~48 chars.
+func deriveTitle(prompt string) string {
+	t := strings.TrimSpace(prompt)
+	// first non-empty line wins
+	for _, ln := range strings.Split(t, "\n") {
+		if s := strings.TrimSpace(ln); s != "" {
+			t = s
+			break
+		}
+	}
+	t = strings.Join(strings.Fields(t), " ") // collapse inner whitespace
+	if t == "" {
+		return ""
+	}
+	const max = 48
+	r := []rune(t)
+	if len(r) > max {
+		t = string(r[:max-1]) + "…"
+	}
+	return t
 }
 
 // memDigestSource is what rebuildSystem needs from the memory store
@@ -239,6 +267,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 		return nil, fmt.Errorf("no model selected — pick one with /model")
 	}
 	a.Sess.Append(session.Msg{Role: "user", Content: prompt})
+	// auto-title: name the session after its first real prompt so the
+	// /sessions list shows WHAT each chat was about (local only, free).
+	if !a.titleSet {
+		if t := deriveTitle(prompt); t != "" && (a.Sess.Title == "" || a.Sess.Title == a.Sess.ID) {
+			a.Sess.SetTitle(t)
+		}
+		a.titleSet = true
+	}
 	out := make(chan Event, 64)
 	go a.loop(ctx, out, prompt)
 	return out, nil

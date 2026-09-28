@@ -37,6 +37,44 @@ func NewOpenRouter(key, model string) *openaiCompatible {
 	return &openaiCompatible{name: "openrouter", apiKey: key, base: "https://openrouter.ai/api/v1", model: model, http: &http.Client{}}
 }
 
+// OpenAI-compatible vendors (2026-09 verified endpoints). All speak the
+// standard /chat/completions SSE dialect; key form differs per vendor:
+//   - gemini: API key works as a bare bearer token on the OpenAI-compat
+//     endpoint (generativelanguage.googleapis.com/v1beta/openai)
+//   - moonshot: international keys -> api.moonshot.ai, mainland -> .cn
+//     (mirror constructor below; keys are NOT interchangeable)
+func NewGemini(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "gemini", apiKey: key, base: "https://generativelanguage.googleapis.com/v1beta/openai", model: model, http: &http.Client{}}
+}
+
+func NewXAI(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "xai", apiKey: key, base: "https://api.x.ai/v1", model: model, http: &http.Client{}}
+}
+
+func NewMistral(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "mistral", apiKey: key, base: "https://api.mistral.ai/v1", model: model, http: &http.Client{}}
+}
+
+func NewMoonshot(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "moonshot", apiKey: key, base: "https://api.moonshot.ai/v1", model: model, http: &http.Client{}}
+}
+
+func NewQwen(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "qwen", apiKey: key, base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: model, http: &http.Client{}}
+}
+
+func NewZai(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "zai", apiKey: key, base: "https://api.z.ai/api/paas/v4", model: model, http: &http.Client{}}
+}
+
+func NewMiniMax(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "minimax", apiKey: key, base: "https://api.minimax.io/v1", model: model, http: &http.Client{}}
+}
+
+func NewGroq(key, model string) *openaiCompatible {
+	return &openaiCompatible{name: "groq", apiKey: key, base: "https://api.groq.com/openai/v1", model: model, http: &http.Client{}}
+}
+
 func (o *openaiCompatible) Name() string  { return o.name }
 func (o *openaiCompatible) Label() string { return o.model }
 

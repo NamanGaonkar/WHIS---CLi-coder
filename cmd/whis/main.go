@@ -44,6 +44,10 @@ func main() {
 	root, _ := os.Getwd()
 	cfg := config.Load()
 	keys := provider.KeysMap(cfg.Keys.Anthropic, cfg.Keys.OpenAI, cfg.Keys.DeepSeek, cfg.Keys.OpenRouter, cfg.Keys.OllamaCloud)
+	// 2026 additions: the eight OpenAI-compatible vendors share the same
+	// resolve path; seed their keys (may be empty) into the live map.
+	keys["gemini"], keys["xai"], keys["mistral"], keys["moonshot"] = cfg.Keys.Gemini, cfg.Keys.XAI, cfg.Keys.Mistral, cfg.Keys.Moonshot
+	keys["qwen"], keys["zai"], keys["minimax"], keys["groq"] = cfg.Keys.Qwen, cfg.Keys.Zai, cfg.Keys.MiniMax, cfg.Keys.Groq
 
 	// subcommands
 	switch flag.Arg(0) {

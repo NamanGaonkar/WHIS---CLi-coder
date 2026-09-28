@@ -75,6 +75,22 @@ func FetchModels(prov, key string) ([]ModelInfo, error) {
 		return fetchOpenAIStyle("https://openrouter.ai/api/v1/models", key, "", true)
 	case "ollama-cloud":
 		return fetchOllamaCloudModels(key)
+	case "gemini":
+		return fetchOpenAIStyle("https://generativelanguage.googleapis.com/v1beta/openai/models", key, "gemini-", false)
+	case "xai":
+		return fetchOpenAIStyle("https://api.x.ai/v1/models", key, "grok", false)
+	case "mistral":
+		return fetchOpenAIStyle("https://api.mistral.ai/v1/models", key, "", false)
+	case "moonshot":
+		return fetchOpenAIStyle("https://api.moonshot.ai/v1/models", key, "kimi", false)
+	case "qwen":
+		return fetchOpenAIStyle("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", key, "qwen", false)
+	case "zai":
+		return fetchOpenAIStyle("https://api.z.ai/api/paas/v4/models", key, "glm", false)
+	case "minimax":
+		return fetchOpenAIStyle("https://api.minimax.io/v1/models", key, "", false)
+	case "groq":
+		return fetchOpenAIStyle("https://api.groq.com/openai/v1/models", key, "", false)
 	}
 	return nil, fmt.Errorf("unknown provider %q", prov)
 }
