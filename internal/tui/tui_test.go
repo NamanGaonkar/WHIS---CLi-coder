@@ -8,6 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"whis/internal/provider"
 )
 
 // fakeAPI is a controllable AgentAPI for tests.
@@ -466,6 +468,70 @@ func TestMenuWindowsLongLists(t *testing.T) {
 	v2 := o2.view(80, 40)
 	if strings.Contains(v2, "of 3") {
 		t.Fatal("short list must not show a scroll indicator")
+	}
+}
+
+// TestModelMenuAsyncFetch pins the async /models flow: opening the menu
+// kicks off a fetch command WITHOUT blocking (no network call in the
+// update path), shows a fetching placeholder, drops STALE results, and
+// swaps in live rows when the matching result lands. Regression: the
+// blocking fetch stalled the UI and desynced mouse release events (menu
+// self-click bug).
+func TestModelMenuAsyncFetch(t *testing.T) {
+	api := &fakeAPI{evs: make(chan TUIEvent), saved: map[string]string{"deepseek": "sk-test"}}
+	m := New(api).(model)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(model)
+	m.splash = false
+	m.over.openProviderMenu(m.agent.Keys())
+	// activate the deepseek row -> model menu with a fetch in flight
+	for i, it := range m.over.items {
+		if it.value == "deepseek" {
+			m.over.cursor = i
+		}
+	}
+	m3, cmd := m.activateOverlay()
+	mm := m3.(model)
+	if mm.over.mode != overlayModel {
+		t.Fatalf("expected model menu, got %v", mm.over.mode)
+	}
+	if cmd == nil {
+		t.Fatal("model menu must return a fetch command (async, non-blocking)")
+	}
+	found := false
+	for _, it := range mm.over.items {
+		if it.value == "@fetching" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("fetching placeholder row missing")
+	}
+	// STALE result (older run): must be dropped, rows unchanged
+	stale := menuModelsLoaded{run: mm.over.fetchRun - 1, prov: "deepseek", models: []provider.ModelInfo{{ID: "stale-model"}}}
+	m4, _ := mm.Update(stale)
+	mm = m4.(model)
+	for _, it := range mm.over.items {
+		if it.label == "stale-model" {
+			t.Fatal("stale fetch result must be dropped")
+		}
+	}
+	// matching result: rows replaced with live ids
+	fresh := menuModelsLoaded{run: mm.over.fetchRun, prov: "deepseek",
+		models: []provider.ModelInfo{{ID: "deepseek-v4-flash", Context: 131072}}}
+	m5, _ := mm.Update(fresh)
+	mm = m5.(model)
+	live := false
+	for _, it := range mm.over.items {
+		if it.label == "deepseek-v4-flash" {
+			live = true
+		}
+		if it.value == "@fetching" {
+			t.Fatal("fetching placeholder must be removed after results land")
+		}
+	}
+	if !live {
+		t.Fatal("live model row missing after fetch result")
 	}
 }
 

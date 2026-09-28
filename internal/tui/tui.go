@@ -11,10 +11,51 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+
+	"whis/internal/provider"
 )
 
 // Version is set from main at boot (release builds inject the tag).
 var Version = "0.1.4"
+
+// menuModelsLoaded replaces the open model menu's rows with the live
+// /models fetch result. Carries the request run number so a STALE fetch
+// (user reopened the menu for another provider meanwhile) is dropped.
+type menuModelsLoaded struct {
+	run    int
+	prov   string
+	models []provider.ModelInfo
+	err    error
+}
+
+// applyModelFetch swaps the fetching placeholder for the live rows (or an
+// error note when the fetch failed; the static catalog rows stay).
+func (m *model) applyModelFetch(msg menuModelsLoaded) {
+	var rows []menuItem
+	for _, it := range m.over.items {
+		if it.value != "@fetching" {
+			rows = append(rows, it)
+		}
+	}
+	if msg.err != nil || len(msg.models) == 0 {
+		reason := "no models visible for this key"
+		if msg.err != nil {
+			reason = msg.err.Error()
+		}
+		if len(rows) == 0 {
+			rows = append(rows, menuItem{label: "no models found", hint: reason, disabled: true})
+		} else {
+			rows = append(rows, menuItem{label: "live fetch failed — showing catalog", hint: reason, disabled: true})
+		}
+		m.over.items = rows
+		if m.over.cursor >= len(rows) {
+			m.over.cursor = len(rows) - 1
+		}
+		return
+	}
+	m.over.fillModelItems(msg.prov, m.agent.Status().Model, m.agent.Status(), msg.models)
+	provider.SyncCatalogWithPricing(msg.prov, msg.models)
+}
 
 // renderMD renders markdown with a dark glamour theme (falls back to plain).
 func renderMD(md string, width int) string {
@@ -443,6 +484,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		return m, nil
 
+	case menuModelsLoaded:
+		// drop stale fetches: menu closed, reopened for another provider,
+		// or a newer fetch already in flight
+		if msg.run != m.over.fetchRun || m.over.mode != overlayModel || msg.prov != m.over.provider {
+			return m, nil
+		}
+		m.applyModelFetch(msg)
+		return m, nil
+
 	case statusTick:
 		if m.runActive {
 			m.status.Spinner = msg.spinner
@@ -699,8 +749,8 @@ func (m model) saveKeyAndContinue() (tea.Model, tea.Cmd) {
 		m.lines = append(m.lines, line{kind: "info", body: "key saved for " + prov})
 	}
 	m.pushOverlay()
-	m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
-	return m, m.input.Focus()
+	cmd := m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
+	return m, tea.Batch(m.input.Focus(), cmd)
 }
 
 // activateOverlay runs the highlighted menu entry.
@@ -768,11 +818,13 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 			return m, m.input.Focus()
 		}
 		m.pushOverlay()
-		m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
-		return m, nil
+		cmd := m.over.openModelMenu(prov, m.agent.Keys(), m.agent.Status().Model, m.agent.Status())
+		return m, cmd
 
 	case overlayModel:
 		switch it.value {
+		case "@fetching":
+			return m, nil // live fetch still in flight
 		case "@key":
 			prov := m.over.provider
 			m.pushOverlay()

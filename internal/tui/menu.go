@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"whis/internal/agent"
@@ -45,6 +46,7 @@ type overlay struct {
 	title    string
 	lines    []string // free-text rows for overlayHelp
 	scroll   int      // help panel scroll offset
+	fetchRun int      // async /models fetch run guard (stale results dropped)
 }
 
 // openHelp shows the help text in a scrollable panel instead of dumping it
@@ -175,77 +177,81 @@ func (o *overlay) openProviderEditMenu(keys map[string]string) {
 	}
 }
 
-// openModelMenu lists live models for the chosen provider. Catalog entries
-// render instantly; live /models fetch results replace them with real ids
-// and metrics. The active model row shows usage stats for this session.
-func (o *overlay) openModelMenu(prov string, keys map[string]string, current string, st Status) {
+// openModelMenu lists models for the chosen provider. Static catalog rows
+// render INSTANTLY; the live /models fetch runs ASYNC (menuModelsLoaded
+// replaces the rows when it lands). A blocking fetch here stalled the UI
+// for up to 8s and desynced mouse release events — the root cause of menu
+// self-clicks right after opening. The active model row shows usage stats.
+func (o *overlay) openModelMenu(prov string, keys map[string]string, current string, st Status) tea.Cmd {
 	o.mode = overlayModel
 	o.title = "SELECT MODEL · " + strings.ToUpper(prov)
 	o.provider = prov
 	o.cursor = 0
 	o.items = nil
 
-	inUse := func(slug string) (string, bool) {
-		if slug != "" && slug == current {
-			return fmt.Sprintf("IN USE · %s tok · $%.4f", commify(st.In+st.Out), st.Cost), true
+	// static catalog entries first so the menu is never empty
+	for _, slug := range provider.ModelsForProvider(prov) {
+		hint, used := o.inUseHint(slug, current, st)
+		if !used {
+			hint = "cloud"
 		}
-		return "", false
+		o.items = append(o.items, menuItem{label: slug, hint: hint, value: slug, selected: used})
 	}
-
-	fill := func(models []provider.ModelInfo) {
-		o.items = nil
-		for _, m := range models {
-			slug := m.Slug
-			if slug == "" {
-				slug = staticSlugFor(prov, m.ID)
-			}
-			hint, used := inUse(slug)
-			if !used {
-				hint = modelHint(prov, m)
-			}
-			o.items = append(o.items, menuItem{
-				label: m.ID, hint: hint, value: slug, selected: used,
-			})
-		}
-		if prov == "openrouter" {
-			o.items = append(o.items, menuItem{label: "custom model id…", hint: "type vendor/name", value: "@custom"})
-		}
-		for i, it := range o.items {
-			if it.selected {
-				o.cursor = i
-			}
+	for i, it := range o.items {
+		if it.selected {
+			o.cursor = i
 		}
 	}
-
-	switch prov {
-	case "ollama":
-		models, err := provider.FetchModels("ollama", "")
-		if err != nil || len(models) == 0 {
-			o.items = append(o.items, menuItem{
-				label: "no local models found", hint: errHint(err, "start: ollama serve"), disabled: true,
-			})
-			return
-		}
-		fill(models)
-	default:
-		key := keys[prov]
-		if key == "" && pNeedsKey(prov) {
-			o.items = append(o.items, menuItem{label: "add API key for " + prov + "…", hint: "required", value: "@key"})
-			return
-		}
-		// static catalog entries first so the menu is never empty
-		for _, slug := range provider.ModelsForProvider(prov) {
-			hint, used := inUse(slug)
-			if !used {
-				hint = "cloud"
-			}
-			o.items = append(o.items, menuItem{label: slug, hint: hint, value: slug, selected: used})
-		}
-		// live fetch replaces with real ids + metrics
+	key := keys[prov]
+	if key == "" && pNeedsKey(prov) {
+		// no key: static rows only (the UI routes keyless providers to the
+		// key form before reaching here; belt-and-suspenders)
+		return nil
+	}
+	o.items = append(o.items, menuItem{
+		label: "fetching live models…", hint: "one moment", value: "@fetching", disabled: true,
+	})
+	// async fetch OFF the UI thread; run number guards against stale results
+	o.fetchRun++
+	run := o.fetchRun
+	return func() tea.Msg {
 		models, err := provider.FetchModels(prov, key)
-		if err == nil && len(models) > 0 {
-			fill(models)
-			provider.SyncCatalogWithPricing(prov, models)
+		return menuModelsLoaded{run: run, prov: prov, models: models, err: err}
+	}
+}
+
+// inUseHint renders the usage hint for the session's active model.
+func (o *overlay) inUseHint(slug, current string, st Status) (string, bool) {
+	if slug != "" && slug == current {
+		return fmt.Sprintf("IN USE · %s tok · $%.4f", commify(st.In+st.Out), st.Cost), true
+	}
+	return "", false
+}
+
+// fillModelItems replaces the rows with live-fetched models (real ids,
+// context/pricing metrics, custom row for openrouter).
+func (o *overlay) fillModelItems(prov, current string, st Status, models []provider.ModelInfo) {
+	o.items = nil
+	for _, m := range models {
+		slug := m.Slug
+		if slug == "" {
+			slug = staticSlugFor(prov, m.ID)
+		}
+		hint, used := o.inUseHint(slug, current, st)
+		if !used {
+			hint = modelHint(prov, m)
+		}
+		o.items = append(o.items, menuItem{
+			label: m.ID, hint: hint, value: slug, selected: used,
+		})
+	}
+	if prov == "openrouter" {
+		o.items = append(o.items, menuItem{label: "custom model id…", hint: "type vendor/name", value: "@custom"})
+	}
+	o.cursor = 0
+	for i, it := range o.items {
+		if it.selected {
+			o.cursor = i
 		}
 	}
 }
