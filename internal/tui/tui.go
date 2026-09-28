@@ -1163,7 +1163,9 @@ func (m *model) flushStream() {
 		m.streamBuf = ""
 	}
 	if m.planBuf != "" {
-		m.lines = append(m.lines, line{kind: "plan", body: m.planBuf})
+		if cp := cleanPlan(m.planBuf); cp != "" {
+			m.lines = append(m.lines, line{kind: "plan", body: cp})
+		}
 		m.planBuf = ""
 	}
 }
@@ -1495,7 +1497,7 @@ func (m model) renderTranscript(vw int) string {
 		case "md":
 			parts = append(parts, renderCollapsible(l.body, vw, m.codeOpenFor(l.n)))
 		case "plan":
-			parts = append(parts, planStyle.Render(truncateLines(l.body, vw-4, 8)))
+			parts = append(parts, planStyle.Render(truncateLines(l.body, vw-4, 12)))
 		case "tool":
 			parts = append(parts, toolStyle.Render("> "+l.body))
 		case "toolout":
@@ -1689,14 +1691,43 @@ func diffStyle(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// cleanPlan normalizes reasoning text for the transcript: models pad
+// reasoning with leading/trailing blank lines and sometimes emit runs of
+// blank lines mid-stream — combined with the blank line renderTranscript
+// puts between blocks, that showed as big airy gaps after every tool step.
+// Trims the edges, squashes internal blank runs to one, drops trailing
+// whitespace per line.
+func cleanPlan(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t\r")
+	}
+	// squash blank runs
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			blank = true
+			continue
+		}
+		if blank && len(out) > 0 {
+			out = append(out, "")
+		}
+		blank = false
+		out = append(out, ln)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
 func truncateLines(s string, width, maxLines int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > maxLines {
-		lines = append(lines[:maxLines], fmt.Sprintf("... (+%d lines, Ctrl+P toggles plan pane)", len(lines)-maxLines))
+		lines = append(lines[:maxLines], fmt.Sprintf("... (+%d lines of reasoning)", len(lines)-maxLines))
 	}
 	for i, ln := range lines {
-		if width > 0 && len(ln) > width {
-			lines[i] = ln[:width] + "..."
+		if width > 0 && len([]rune(ln)) > width {
+			r := []rune(ln)
+			lines[i] = string(r[:width]) + "..."
 		}
 	}
 	return strings.Join(lines, "\n")
