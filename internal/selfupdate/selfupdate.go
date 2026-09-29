@@ -150,7 +150,7 @@ func norm(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "v"
 // unknown current version returns an error: callers treat that as
 // "up to date" — never force a download on a maybe.
 func releaseRebuilt(current string) (bool, error) {
-	if !strings.HasPrefix(strings.ToLower(norm(current)), "v") {
+	if v := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(current)), "v"); v == "" || v[0] < '0' || v[0] > '9' {
 		return false, fmt.Errorf("non-release version %q", current)
 	}
 	sum, err := fetchText(assetURL(assetName() + ".sha256"))
