@@ -132,7 +132,7 @@ func (o *overlay) openSlashMenu() {
 		{label: "retry", hint: "re-run the last prompt from scratch", value: "/retry"},
 		{label: "compress", hint: "free context: squash old tool logs", value: "/compress"},
 		{label: "usage", hint: "tokens, cost and context for this session", value: "/usage"},
-		{label: "copy last answer", hint: "copy the newest reply/message to the clipboard (also ctrl+y)", value: "/copy"},
+		{label: "copy last answer", hint: "to clipboard · /copy prompt|output for other targets (also ctrl+y)", value: "/copy"},
 		{label: "undo", hint: "roll back last change", value: "/undo"},
 		{label: "init", hint: "(re)generate WHIS.md", value: "/init"},
 		{label: "help", hint: "commands & keys in a panel", value: "@help"},

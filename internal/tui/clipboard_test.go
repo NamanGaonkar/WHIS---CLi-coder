@@ -55,27 +55,42 @@ func TestLastTranscriptTextPrefersReply(t *testing.T) {
 	}
 }
 
-// TestCtrlYCopiesLastReply presses ctrl+y on a finished conversation and
-// expects the transcript to gain a "copied" confirmation info line.
-func TestCtrlYCopiesLastReply(t *testing.T) {
+// TestCopyTargetsAreSelectable covers /copy prompt and /copy output plus
+// the arg-less default (reply).
+func TestCopyTargetsAreSelectable(t *testing.T) {
 	m := newTestModel(t)
 	m.splash = false
+	m.agent = &fakeAPI{evs: make(chan TUIEvent), lastReply: "the **answer**", lastUser: "my original question"}
 	m.lines = []line{
-		{kind: "user", body: "hello"},
-		{kind: "md", body: "here is the answer"},
+		{kind: "user", body: "my original question"},
+		{kind: "toolout", body: "PASS 12 tests"},
+		{kind: "md", body: "the answer"},
 	}
 
+	// default: reply
 	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	m2 := mm.(model)
-
-	found := false
-	for _, l := range m2.lines {
-		if l.kind == "info" && strings.Contains(stripANSI(l.body), "copied") {
-			found = true
-		}
+	if !strings.Contains(stripANSI(m2.lines[len(m2.lines)-1].body), "last reply") {
+		t.Fatalf("default copy should target the reply, got: %q", stripANSI(m2.lines[len(m2.lines)-1].body))
 	}
-	if !found {
-		t.Fatal("ctrl+y should append a copied confirmation line")
+
+	// /copy prompt: newest user prompt from the session store
+	m3, _ := m2.copyLast("prompt")
+	if !strings.Contains(stripANSI(m3.(model).lines[len(m3.(model).lines)-1].body), "your last prompt") {
+		t.Fatal("/copy prompt should acknowledge the prompt target")
+	}
+
+	// /copy output: newest toolout line
+	m4, _ := m2.copyLast("output")
+	if !strings.Contains(stripANSI(m4.(model).lines[len(m4.(model).lines)-1].body), "last command output") {
+		t.Fatal("/copy output should acknowledge the output target")
+	}
+
+	// unknown target errors honestly (no silent fallback to reply)
+	m5, _ := m2.copyLast("banana")
+	last := stripANSI(m5.(model).lines[len(m5.(model).lines)-1].body)
+	if m5.(model).lines[len(m5.(model).lines)-1].kind != "error" || !strings.Contains(last, "unknown target") {
+		t.Fatalf("unknown target should error, got %q", last)
 	}
 }
 

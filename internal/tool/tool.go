@@ -119,6 +119,15 @@ func num(desc string) map[string]any { return map[string]any{"type": "integer", 
 
 func boolp(desc string) map[string]any { return map[string]any{"type": "boolean", "description": desc} }
 
+// arr describes an array-of-objects parameter (multi_edit edits).
+func arr(desc string, props map[string]any, required ...string) map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"description": desc,
+		"items":       obj(props, required...),
+	}
+}
+
 // Manifest returns all tool definitions for the system prompt / API.
 func Manifest() []Definition {
 	return []Definition{
@@ -137,6 +146,13 @@ func Manifest() []Definition {
 			"search":  str("exact existing text to find"),
 			"replace": str("replacement text"),
 		}, "path", "search", "replace")},
+		{"multi_edit", "Apply SEVERAL search/replace edits in ONE call, optionally across multiple files. Best for multi-site refactors: one approval, one undo point. Each edit: {path, search, replace}; empty search only when creating a new file. All searches are validated first — if any is not found, NOTHING is written.", obj(map[string]any{
+			"edits": arr("the batch of edits", map[string]any{
+				"path":    str("file path relative to workspace root"),
+				"search":  str("exact existing text to find"),
+				"replace": str("replacement text"),
+			}, "path", "search", "replace"),
+		}, "edits")},
 		{"run_command", "Run a shell command in the workspace root. Output capped at 40 lines. Requires approval unless auto-approve.", obj(map[string]any{
 			"command": str("shell command to run"),
 		}, "command")},
@@ -153,6 +169,10 @@ func Manifest() []Definition {
 		{"memory_save", "Persist a durable fact the user asked to remember (preferences, project context, decisions). It becomes available in ALL future sessions.", obj(map[string]any{
 			"text": str("the fact to remember, one self-contained sentence"),
 		}, "text")},
+		{"task_tracker", "Maintain YOUR working plan for multi-step jobs. action=write replaces the whole checklist (markdown: '- [ ]' todo, '- [x]' done); action=get reads it. Write a plan BEFORE starting a multi-step job and update it as you complete steps — it persists across turns.", obj(map[string]any{
+			"action": str("get | write"),
+			"body":   str("for write: the full markdown checklist"),
+		}, "action")},
 		{"memory_recall", "Search previously remembered facts. Use when the user refers to something they told you earlier.", obj(map[string]any{
 			"query": str("words to search for (empty = list everything)"),
 		})},
@@ -186,6 +206,12 @@ func (e *Env) Execute(name string, args json.RawMessage) Result {
 		return e.ReadRange(gs("path"), gi("start"), gi("end"), gb("force"))
 	case "apply_patch":
 		return e.ApplyPatch(gs("path"), gs("search"), gs("replace"))
+	case "multi_edit":
+		eds, err := parseMultiEditArgs(args)
+		if err != nil {
+			return Result{Output: "multi_edit: bad arguments: " + err.Error()}
+		}
+		return e.MultiEdit(eds)
 	case "run_command":
 		return e.RunCommand(gs("command"))
 	case "search_codebase":
@@ -198,6 +224,8 @@ func (e *Env) Execute(name string, args json.RawMessage) Result {
 		return e.WebSearch(gs("query"))
 	case "browser":
 		return e.Browser(gs("action"), gs("arg"))
+	case "task_tracker":
+		return e.taskTracker(gs("action"), gs("body"))
 	case "memory_save":
 		if e.Mem == nil {
 			return Result{OK: false, Output: "memory store unavailable"}

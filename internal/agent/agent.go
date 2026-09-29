@@ -135,7 +135,7 @@ func NewUnbound(root string, auto bool) *Agent {
 		Root: root, AutoApprove: auto, Mode: ModeAsk,
 		Sess:           session.NewForRoot("", root),
 		Tools:          tool.NewEnv(root),
-		MaxTurn:        40,
+		MaxTurn:        120,
 		lastToolResult: map[string]tool.Result{},
 	}
 	a.Tools.RiskBased = !auto
@@ -215,6 +215,11 @@ func (a *Agent) rebuildSystem() {
 	a.System = project.SystemPrompt(a.Root, names)
 	a.System += "\n\n" + a.modeDirective()
 	a.System += "\n\n" + completionDirective()
+	// active task list: the agent's own working plan, refreshed whenever it
+	// calls task_tracker write. Kept separate from the cached static block.
+	if tl := (tool.TaskTracker{Root: a.Root}).Load(); strings.TrimSpace(tl) != "" {
+		a.System += "\n\n--- ACTIVE TASK LIST (your plan; update via task_tracker write) ---\n" + tl
+	}
 	// persistent memory: remembered facts ride the cached system prompt so
 	// every session starts already knowing them.
 	if a.Mem != nil {
@@ -431,7 +436,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 		for _, c := range calls {
 			emit(out, Event{Type: "tool_start", ToolName: c.Name, ToolArgs: string(c.Args)})
 			// plan mode hard-deny for mutating tools (model may still attempt)
-			if a.Mode == ModePlan && (c.Name == "apply_patch" || c.Name == "run_command") {
+			if a.Mode == ModePlan && (c.Name == "apply_patch" || c.Name == "multi_edit" || c.Name == "run_command") {
 				emit(out, Event{Type: "tool_end", ToolName: c.Name,
 					ToolOutput: "denied: plan mode is read-only — switch to ask/auto mode to act", ToolOK: false})
 				a.Sess.Append(session.Msg{Role: "tool", Content: "denied: plan mode is read-only", ToolCallID: c.ID})
@@ -455,7 +460,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 			emit(out, Event{Type: "notice", Text: fmt.Sprintf("compaction: squashed %d tool logs into diagnostic vectors", n)})
 		}
 	}
-	emit(out, Event{Type: "error", Text: "stopped: agent used all 40 tool turns without a final answer — try breaking the task into smaller steps (/task helps too)"})
+	emit(out, Event{Type: "error", Text: fmt.Sprintf("stopped: agent used all %d tool turns without a final answer — try breaking the task into smaller steps (/task helps too)", a.MaxTurn)})
 }
 
 // buildMessages converts the session into provider messages.

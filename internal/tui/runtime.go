@@ -207,7 +207,8 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
   /retry          re-run the last prompt from scratch
   /compress       squash old tool logs to free context now
   /usage          token + cost + context usage for this session
-  /copy           copy the newest reply/message to the clipboard (ctrl+y)
+  /copy [what]    copy last reply to clipboard; /copy prompt or /copy output
+                  for other targets (ctrl+y = quick reply copy)
   /init           (re)generate WHIS.md project guide
   /sessions       list saved sessions
   /memory         show remembered facts (survive all sessions)
@@ -375,9 +376,13 @@ func (ad *Adapter) RetryPrompt() (string, bool) {
 	return ad.A.RetryPrompt()
 }
 
-// LastAssistantText returns the newest assistant message body from the
-// session store (raw markdown, no ANSI) — used by /copy and ctrl+y so the
-// clipboard gets the SOURCE of the reply, not its rendered transcript form.
+// LastAssistantText returns the newest NON-empty assistant message body
+// from the session store (raw markdown, no ANSI) — used by /copy and
+// ctrl+y so the clipboard gets the SOURCE of the reply, not its rendered
+// transcript form. Empty assistant records are skipped: every tool-using
+// turn appends one (the model spoke via tool calls, not text), so the
+// naive "last message" used to return "" right after a web_search turn
+// and copy grabbed the wrong thing.
 func (ad *Adapter) LastAssistantText() string {
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
@@ -386,7 +391,24 @@ func (ad *Adapter) LastAssistantText() string {
 	}
 	msgs := ad.A.Sess.Messages
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "assistant" {
+		if msgs[i].Role == "assistant" && strings.TrimSpace(msgs[i].Content) != "" {
+			return msgs[i].Content
+		}
+	}
+	return ""
+}
+
+// LastUserText returns the newest user prompt from the session store
+// (raw source) — the /copy prompt target.
+func (ad *Adapter) LastUserText() string {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	if ad.A == nil || ad.A.Sess == nil {
+		return ""
+	}
+	msgs := ad.A.Sess.Messages
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && strings.TrimSpace(msgs[i].Content) != "" {
 			return msgs[i].Content
 		}
 	}

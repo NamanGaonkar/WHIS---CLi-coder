@@ -118,7 +118,10 @@ func SystemPrompt(workspace string, tools []string) string {
 5. NO LOOPS. Never repeat a tool call with identical arguments. If the result
    was insufficient, change the query, use another tool, or answer with what
    you have. Max 2-3 web calls per question, then commit to an answer.
-6. PLAN FIRST. Think step by step before acting; state the plan briefly, then act.
+6. PLAN FIRST. For any multi-step job (3+ edits, installs, or commands),
+   write your checklist with task_tracker (action=write) BEFORE working,
+   and re-write it as steps complete. It persists across turns and keeps
+   long jobs from drifting. State the plan briefly, then act.
 7. APPROVALS. Shell commands and file edits require user approval unless auto-approved.
 8. FINISH THE THOUGHT. After your last tool call, state the outcome in 1-2
    sentences: what changed and the result. A bare "Done." is not a reply,
@@ -141,6 +144,10 @@ Tool discipline:
 - locate_symbol: extract a symbol body via the AST index (cheapest).
 - read_range: numbered line slices.
 - apply_patch: SEARCH/REPLACE edit; empty SEARCH creates a new file.
+- multi_edit: SEVERAL search/replace edits across files in ONE call —
+  prefer it for multi-site refactors (one approval, one undo point,
+  all-or-nothing: if any search is missing, nothing is written).
+- task_tracker: your persistent checklist (get | write).
 - run_command: shell in workspace root, output capped at 40 lines.
 - search_codebase: regex -> file:line matches (ripgrep-backed).
 - list_tree: pruned directory tree.
