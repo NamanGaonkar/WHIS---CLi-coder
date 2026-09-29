@@ -82,6 +82,11 @@ func main() {
 		fmt.Println("browser engine ready.")
 		return
 	case "mcp":
+		// `whis mcp add <preset>` — one-command community presets.
+		if flag.Arg(1) == "add" {
+			addMCPPreset(flag.Arg(2))
+			return
+		}
 		// status: connect configured servers, list their tools, exit.
 		m := mcp.NewManager()
 		defer m.Close()
@@ -223,6 +228,81 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fatal(err)
 	}
+}
+
+// mcpPresets are one-command templates: name -> builder that asks for the
+// single value it needs and returns the server config.
+func mcpPresets() map[string]func() (mcp.ServerConfig, bool) {
+	ask := func(label string) string {
+		fmt.Print(label + ": ")
+		var v string
+		fmt.Scanln(&v)
+		return strings.TrimSpace(v)
+	}
+	return map[string]func() (mcp.ServerConfig, bool){
+		"filesystem": func() (mcp.ServerConfig, bool) {
+			dir := ask("directory to expose (absolute path)")
+			if dir == "" {
+				return mcp.ServerConfig{}, false
+			}
+			return mcp.ServerConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem", dir}}, true
+		},
+		"github": func() (mcp.ServerConfig, bool) {
+			tok := ask("GitHub personal access token")
+			if tok == "" {
+				return mcp.ServerConfig{}, false
+			}
+			return mcp.ServerConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-github"}, Env: map[string]string{"GITHUB_PERSONAL_ACCESS_TOKEN": tok}}, true
+		},
+		"sqlite": func() (mcp.ServerConfig, bool) {
+			db := ask("path to the .db file")
+			if db == "" {
+				return mcp.ServerConfig{}, false
+			}
+			return mcp.ServerConfig{Command: "uvx", Args: []string{"mcp-server-sqlite", "--db-path", db}}, true
+		},
+		"brave": func() (mcp.ServerConfig, bool) {
+			key := ask("Brave Search API key")
+			if key == "" {
+				return mcp.ServerConfig{}, false
+			}
+			return mcp.ServerConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-brave-search"}, Env: map[string]string{"BRAVE_API_KEY": key}}, true
+		},
+		"fetch": func() (mcp.ServerConfig, bool) {
+			return mcp.ServerConfig{Command: "uvx", Args: []string{"mcp-server-fetch"}}, true
+		},
+	}
+}
+
+// addMCPPrompt merges a preset into ~/.whis/mcp.json.
+func addMCPPreset(name string) {
+	presets := mcpPresets()
+	if name == "" {
+		fmt.Println("usage: whis mcp add <preset>")
+		fmt.Println("presets:")
+		for p := range presets {
+			fmt.Println("  " + p)
+		}
+		return
+	}
+	build, ok := presets[name]
+	if !ok {
+		fatal(fmt.Errorf("unknown preset %q (try: whis mcp add)", name))
+	}
+	sc, ok := build()
+	if !ok {
+		fmt.Println("cancelled — nothing written")
+		return
+	}
+	cfg := mcp.LoadConfig()
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = map[string]mcp.ServerConfig{}
+	}
+	cfg.MCPServers[name] = sc
+	if err := mcp.SaveConfig(cfg); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("saved %q to %s — restart whis (or run whis mcp) to connect\n", name, mcp.ConfigPath())
 }
 
 // defaultModel picks the first usable model for headless runs, or empty.

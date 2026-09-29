@@ -44,6 +44,7 @@ func (f *fakeAPI) SetMode(mode string) error             { return nil }
 func (f *fakeAPI) Interrupt()                            {}
 func (f *fakeAPI) LastAssistantText() string             { return f.lastReply }
 func (f *fakeAPI) LastUserText() string                  { return f.lastUser }
+func (f *fakeAPI) MCPStatus() string                     { return "no MCP servers configured." }
 
 func newTestModel(t *testing.T) model {
 	t.Helper()

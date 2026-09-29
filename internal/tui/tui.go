@@ -186,6 +186,7 @@ type AgentAPI interface {
 	RetryPrompt() (string, bool)
 	LastAssistantText() string
 	LastUserText() string
+	MCPStatus() string
 	ResumedTranscript() []TUILine
 	ResumeInfo() string
 	SetMode(mode string) error
@@ -694,6 +695,10 @@ func (m *model) runSlash(v string) tea.Cmd {
 	case "/sessions":
 		m.over.openSessions(m.agent.Workspace())
 		return nil
+	case "/mcp":
+		m.over.openHelp(m.agent.MCPStatus())
+		m.over.title = "MCP SERVERS"
+		return nil
 	case "/mode":
 		m.over.openModeMenu(m.agent.Status().Mode)
 		return nil
@@ -873,6 +878,11 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		case "/sessions":
 			m.pushOverlay()
 			m.over.openSessions(m.agent.Workspace())
+			return m, nil
+		case "/mcp":
+			m.pushOverlay()
+			m.over.openHelp(m.agent.MCPStatus())
+			m.over.title = "MCP SERVERS"
 			return m, nil
 		case "/mode":
 			m.pushOverlay()
@@ -1488,7 +1498,13 @@ func (m model) renderTranscript(vw int) string {
 		case "plan":
 			parts = append(parts, planStyle.Render(truncateLines(l.body, vw-4, 12)))
 		case "tool":
-			parts = append(parts, toolStyle.Render("> "+l.body))
+			if isMCPToolLine(l.body) {
+				// external MCP call: amber diamond marker so external side
+				// effects are visually distinct from native tools
+				parts = append(parts, warnStyle.Render("◆ "+l.body))
+			} else {
+				parts = append(parts, toolStyle.Render("> "+l.body))
+			}
 		case "toolout":
 			parts = append(parts, diffStyle(l.body))
 		case "done":
@@ -1523,6 +1539,17 @@ func (m model) renderTranscript(vw int) string {
 		clipped = append(clipped, strings.Join(bl, "\n"))
 	}
 	return strings.Join(clipped, "\n\n")
+}
+
+// isMCPToolLine reports whether a transcript tool line names an MCP tool:
+// tool lines start with the tool name; namespaced names (srv__tool) only
+// ever come from MCP routing.
+func isMCPToolLine(body string) bool {
+	name, _, ok := strings.Cut(body, " ")
+	if !ok {
+		name = body
+	}
+	return strings.Contains(name, "__")
 }
 
 // stripANSI removes all ANSI escape sequences from a line. CSI form:

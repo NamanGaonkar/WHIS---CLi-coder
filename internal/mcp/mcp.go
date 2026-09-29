@@ -27,11 +27,13 @@ import (
 )
 
 // ServerConfig is one entry of ~/.whis/mcp.json (standard Claude/Cursor
-// schema so users can copy their existing config verbatim).
+// schema so users can copy their existing config verbatim). The
+// whis-specific "disabled" flag is additive and ignored by other hosts.
 type ServerConfig struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	Command  string            `json:"command"`
+	Args     []string          `json:"args,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	Disabled bool              `json:"disabled,omitempty"`
 }
 
 // Config is the whole mcp.json file.
@@ -62,6 +64,23 @@ func LoadConfig() Config {
 	}
 	_ = json.Unmarshal(b, &c)
 	return c
+}
+
+// SaveConfig writes the config back (used by `whis mcp add`), creating
+// ~/.whis when needed.
+func SaveConfig(c Config) error {
+	path := ConfigPath()
+	if path == "" {
+		return fmt.Errorf("cannot resolve home directory")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }
 
 const (
@@ -109,6 +128,9 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) []string {
 		wg       sync.WaitGroup
 	)
 	for name, sc := range cfg.MCPServers {
+		if sc.Disabled {
+			continue // token saver: zero spawns, zero prompt cost
+		}
 		if strings.TrimSpace(sc.Command) == "" {
 			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("mcp: server %q has no command — skipped", name))
@@ -131,6 +153,40 @@ func (m *Manager) Connect(ctx context.Context, cfg Config) []string {
 	}
 	wg.Wait()
 	return warnings
+}
+
+// HasServer reports whether a server by this name is connected.
+func (m *Manager) HasServer(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.sessions[name]
+	return ok
+}
+
+// ToolCount returns the number of tools a connected server exposes.
+func (m *Manager) ToolCount(name string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for ns := range m.tools {
+		if strings.HasPrefix(ns, name+nsSep) {
+			n++
+		}
+	}
+	return n
+}
+
+// ServerTools returns the namespaced tool names of one connected server.
+func (m *Manager) ServerTools(name string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, ns := range m.order {
+		if strings.HasPrefix(ns, name+nsSep) {
+			out = append(out, ns)
+		}
+	}
+	return out
 }
 
 // ConnectSync is Connect with a hard 5s budget, for callers that must know

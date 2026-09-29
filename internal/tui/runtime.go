@@ -11,6 +11,7 @@ import (
 
 	"whis/internal/agent"
 	"whis/internal/config"
+	"whis/internal/mcp"
 	"whis/internal/memory"
 	"whis/internal/project"
 	"whis/internal/provider"
@@ -211,6 +212,7 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
                   for other targets (ctrl+y = quick reply copy)
   /init           (re)generate WHIS.md project guide
   /sessions       list saved sessions
+  /mcp            MCP servers: connection status + tool list
   /memory         show remembered facts (survive all sessions)
   /memory forget <words>   delete matching memories
   /themes         switch the color palette (also: ? or ctrl+t)
@@ -295,6 +297,34 @@ func (ad *Adapter) Status() Status {
 	return st
 }                                     // Workspace returns the current project root.
 func (ad *Adapter) Workspace() string { return ad.A.Root }
+
+// MCPStatus renders the /mcp panel body: one line per configured server
+// (● connected with tool count, ○ disabled, × failed), then its tools.
+func (ad *Adapter) MCPStatus() string {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	cfg := mcp.LoadConfig()
+	if len(cfg.MCPServers) == 0 {
+		return "no MCP servers configured.\nadd one with:  whis mcp add filesystem\nconfig file:  " + mcp.ConfigPath()
+	}
+	var b strings.Builder
+	for name, sc := range cfg.MCPServers {
+		switch {
+		case sc.Disabled:
+			fmt.Fprintf(&b, "○ %s (disabled)\n", name)
+			continue
+		case ad.A.MCP == nil || !ad.A.MCP.HasServer(name):
+			fmt.Fprintf(&b, "× %s (failed to connect)\n", name)
+			continue
+		}
+		n := ad.A.MCP.ToolCount(name)
+		fmt.Fprintf(&b, "● %s (connected, %d tools)\n", name, n)
+		for _, ns := range ad.A.MCP.ServerTools(name) {
+			fmt.Fprintf(&b, "    %s\n", ns)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
 // Ready reports whether a model is bound and prompts can run.
 func (ad *Adapter) Ready() bool { return ad.A.Bound() }
