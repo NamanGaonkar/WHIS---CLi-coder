@@ -112,7 +112,7 @@ func TestSmokeScrollbarGeometry(t *testing.T) {
 	m.vp.Height = 10
 	m.vp.SetContent(m.renderTranscript(m.vp.Width))
 	m.vp.GotoBottom()
-	out := vpWithScrollbar(m.vp)
+	out := vpWithScrollbar(m.vp, -1, -1)
 	lines := strings.Split(out, "\n")
 	if len(lines) < m.vp.Height {
 		t.Fatalf("scrollbar output truncated: %d lines", len(lines))
@@ -130,7 +130,7 @@ func TestSmokeScrollbarGeometry(t *testing.T) {
 	// thumb position moves with scroll
 	top := m.vp.YOffset
 	m.vp.GotoBottom()
-	bottomView := vpWithScrollbar(m.vp)
+	bottomView := vpWithScrollbar(m.vp, -1, -1)
 	if bottomView == "" {
 		t.Fatal("empty scrollbar view at bottom")
 	}
@@ -271,9 +271,12 @@ func TestSmokeClipWideRunesAndParagraphs(t *testing.T) {
 	}
 }
 
-// TestSmokeArrowsVisiblyScroll renders a full session frame, presses up /
-// pgup / down, and asserts the VISIBLE frame changes (end-to-end navigation
-// proof, not just YOffset pokes).
+// TestSmokeArrowsVisiblyScroll renders a full session frame and asserts the
+// two navigation contracts end-to-end (VISIBLE frame changes, not just
+// YOffset pokes):
+//   - plain up/down move the input CARET (opencode behavior) — proven with
+//     multi-row input content, since an empty box has no visible caret row;
+//   - pgup/pgdn scroll the CHAT transcript.
 func TestSmokeArrowsVisiblyScroll(t *testing.T) {
 	m := newTestModel(t)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
@@ -282,6 +285,9 @@ func TestSmokeArrowsVisiblyScroll(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		m.lines = append(m.lines, line{kind: "info", body: fmt.Sprintf("unique-line-%03d", i)})
 	}
+	// multi-row input content so the caret has a row to move BETWEEN:
+	// SetValue ends with the caret on the LAST logical row
+	m.input.SetValue("hello\nworld")
 	// the real app syncs the viewport on every Update; simulate that here
 	// (direct field pokes need one Update pass to reach the viewport)
 	k, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
@@ -290,14 +296,33 @@ func TestSmokeArrowsVisiblyScroll(t *testing.T) {
 	if !strings.Contains(v1, "unique-line-059") {
 		t.Fatal("precondition: frame should show the newest line")
 	}
-	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = k.(model)
+	if m.input.Line() != 1 {
+		t.Fatalf("precondition: caret should start on input row 1, got %d", m.input.Line())
+	}
+	// up: the caret moves WITHIN the box (last row -> first row) and the
+	// chat stays pinned to the bottom. The frame itself cannot prove the
+	// caret moved in a test: the block cursor is blink-driven and the test
+	// harness never runs the blink commands, so assert the caret row that
+	// the real key path produced instead.
 	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = k.(model)
 	v2 := m.View()
-	if v2 == v1 {
-		t.Fatal("up arrows did NOT change the visible frame")
+	if m.input.Line() != 0 {
+		t.Fatalf("up arrow did not move the input caret (row %d, want 0)", m.input.Line())
 	}
+	if !strings.Contains(v2, "unique-line-059") {
+		t.Fatal("up arrow scrolled the chat instead of moving the caret")
+	}
+	// down: caret returns to the last row, chat still pinned
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = k.(model)
+	if m.input.Line() != 1 {
+		t.Fatalf("down arrow did not move the input caret back (row %d, want 1)", m.input.Line())
+	}
+	if !strings.Contains(m.View(), "unique-line-059") {
+		t.Fatal("down arrow scrolled the chat instead of moving the caret")
+	}
+	// pgup: chat scroll takes the newest line off screen
 	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	m = k.(model)
 	v3 := m.View()
@@ -307,11 +332,15 @@ func TestSmokeArrowsVisiblyScroll(t *testing.T) {
 	if strings.Contains(v3, "unique-line-059") {
 		t.Fatal("scrolled up but still sees the bottom line")
 	}
-	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	// pgdown: chat scrolls back down to the newest line
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	m = k.(model)
 	v4 := m.View()
 	if v4 == v3 {
-		t.Fatal("down arrow did NOT change the visible frame")
+		t.Fatal("pgdown did NOT change the visible frame")
+	}
+	if !strings.Contains(v4, "unique-line-059") {
+		t.Fatal("pgdown did not return to the newest line")
 	}
 }
 

@@ -211,7 +211,7 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
   /copy [what]    copy last reply to clipboard; /copy prompt or /copy output
                   for other targets (ctrl+y = quick reply copy)
   /init           (re)generate WHIS.md project guide
-  /sessions       list saved sessions
+  /history        list past conversations (also /sessions)
   /mcp            MCP servers: connection status + tool list
   /memory         show remembered facts (survive all sessions)
   /memory forget <words>   delete matching memories

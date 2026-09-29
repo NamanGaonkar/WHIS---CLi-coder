@@ -44,7 +44,12 @@ type Env struct {
 	OnSnapshot func() error
 	// Mem is the persistent cross-session memory store (nil-safe: memory
 	// tools degrade gracefully when unset, e.g. in /task subagents).
-	Mem        MemoryStore
+	Mem MemoryStore
+	// RunCtx is the AGENT RUN's context, set by the agent loop before each
+	// run. Shell commands derive their timeout context from it, so an esc
+	// interrupt (context cancel) kills a hung child (cmd /c date waiting
+	// on stdin) INSTANTLY instead of running out the full 120s timeout.
+	RunCtx     context.Context
 	index      *Index
 	indexBuilt bool
 }
@@ -316,7 +321,13 @@ func (e *Env) RunCommand(command string) Result {
 	// The command MUST be created with exec.CommandContext (Go requires it
 	// when Cancel is set — plain exec.Command + Cancel fails every run with
 	// "command with a non-nil Cancel was not created with CommandContext").
-	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	// The timeout derives from the RUN context when available: esc cancels
+	// the run context, which kills the child instantly (god-key esc).
+	base := e.RunCtx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, CommandTimeout)
 	defer cancel()
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -325,6 +336,12 @@ func (e *Env) RunCommand(command string) Result {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
 	cmd.Dir = e.Root
+	// stdin MUST be closed: interactive prompts (cmd /c date, git commit
+	// editor, any "press any key") block forever waiting for keyboard
+	// input the agent will never type — the classic "stuck at run_command
+	// date" hang. Closing stdin makes those commands fail fast or take
+	// their default instead of dead-waiting for 120s.
+	cmd.Stdin = nil
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return Result{OK: false, Output: capLines(string(out), MaxCommandOutput) +

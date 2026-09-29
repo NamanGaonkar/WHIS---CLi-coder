@@ -416,8 +416,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// measure the gap since the previous key ONCE, before anything runs:
+		// used by the enter guard (synthetic paste bursts) below
+		keyGap := time.Since(m.lastKeyAt)
+		m.lastKeyAt = time.Now()
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
+			// ctrl+c with a live drag selection COPIES it first (opencode
+			// parity); with nothing selected it still quits. ctrl+d always
+			// quits.
+			if msg.String() == "ctrl+c" && (m.selAnchor >= 0 || m.selCur >= 0) && m.copySelection() {
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 		} // bracketed paste: the terminal wrapped the clipboard in ESC[200~ /
@@ -429,7 +439,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (a paste starting with "/" on an empty box used to open the command
 		// menu and swallow the clipboard as menu input).
 		if msg.Paste {
-			m.input.InsertString(string(msg.Runes))
+			// normalize line endings at the boundary (opencode parity):
+			// Windows ConPTY often delivers CRLF or CR-only newlines inside
+			// bracketed paste; the textarea only understands \n
+			payload := strings.ReplaceAll(string(msg.Runes), "\r\n", "\n")
+			payload = strings.ReplaceAll(payload, "\r", "\n")
+			m.input.InsertString(payload)
 			// a paste that wraps past the pane cap collapses to the 2-row
 			// chip ("pasted N lines — enter sends ALL") like the Freebuff
 			// composer: the buffer keeps every byte, the box stays small.
@@ -448,7 +463,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pasteChip = false
 			}
 		}
-		// keyboard scrolling of the transcript (chat history)
+		// keyboard scrolling of the transcript (chat history). Plain up/down
+		// move the CARET when the box holds multi-row content (cursor not on
+		// first/last visual row); only at the caret edges do they scroll the
+		// chat (ConPTY wheel = arrows, so wheel scrolling still works).
 		if m.over.mode == overlayNone {
 			switch msg.String() {
 			case "pgup", "shift+up", "ctrl+up":
@@ -466,16 +484,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "end":
 				m.vp.GotoBottom()
 				return m, nil
-			case "up", "down":
-				// arrows ALWAYS scroll the chat. Windows ConPTY translates
-				// the mouse wheel to arrow keys, so this is also the wheel
-				// path. Caret stays editable via left/right/home/end-free.
-				if msg.String() == "up" {
-					m.vp.LineUp(2)
-				} else {
-					m.vp.LineDown(2)
-				}
-				return m, nil
+				// NOTE: plain up/down are NOT hijacked here anymore — they move
+				// the input caret (opencode behavior). Chat scrolling keeps
+				// pgup/pgdn, shift+arrows, alt+arrows and the real mouse wheel
+				// (mouse mode delivers wheel as MouseMsg, not synthetic arrows).
 			}
 		}
 
@@ -511,8 +523,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.submitPrompt(true)
 			}
 		} else {
-			// esc: answer approval first, then interrupt a running agent
+			// esc: the god key — clear a drag selection (opencode parity),
+			// answer approval, then interrupt a running agent. EVERY stuck
+			// state (API stream, hung shell child, MCP call) dies here: the
+			// cancel context kills them instantly, no wasted API tokens.
 			if msg.String() == "esc" {
+				if m.selAnchor >= 0 || m.selCur >= 0 {
+					m.selAnchor, m.selCur = -1, -1 // opencode: esc clears selection
+					return m, nil
+				}
 				if m.approval != "" {
 					m.answerApproval(false)
 					return m, nil
@@ -551,13 +570,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if msg.String() == "enter" {
-				// burst guard: terminals WITHOUT bracketed paste (classic
-				// Windows conhost) deliver a paste as synthetic keystrokes,
-				// and every newline in the pasted text pressed enter —
-				// auto-submitting garbled fragments. Synthetic keys arrive
-				// <30ms apart; humans cannot. Enter mid-burst inserts a
-				// newline instead of submitting.
-				if m.inPasteBurst() {
+				// submit with a burst check: terminals WITHOUT bracketed paste
+				// deliver a paste as synthetic keystrokes whose newlines would
+				// auto-submit garbled fragments. A key gap <20ms means we are
+				// inside such a burst (human enter after typing is never that
+				// fast) — the enter becomes a newline in the buffer instead.
+				if keyGap < 20*time.Millisecond {
 					m.input.InsertString("\n")
 					return m, nil
 				}
@@ -570,7 +588,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.endRun()
 		m.status.Spinning = false
-		m.lines = append(m.lines, line{kind: "info", body: "another whis window took over this folder — this session was saved and closed. Resume it with /sessions in the new window."})
+		m.lines = append(m.lines, line{kind: "info", body: "another whis window took over this folder — this history was saved and closed. Resume it with /history in the new window."})
 		return m, tea.Quit
 
 	case streamChunk:
@@ -681,38 +699,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// any stale selection instead of leaving phantom state
 				m.selAnchor, m.selCur = -1, -1
 			}
+			// the press is fully handled: fall through and the trailing
+			// "any other mouse event cancels" guard would wipe the anchor
+			// we JUST set (drag-select silently dead bug)
+			return m, nil
 		case msg.Action == tea.MouseActionMotion && (m.selAnchor >= 0 || m.selCur >= 0):
 			if m.vp.Height > 0 {
 				m.selCur = clampInt(msg.Y-m.vpTop, 0, maxInt(0, m.vp.Height-1))
 			}
 			return m, nil
 		case msg.Type == tea.MouseRelease && (m.selAnchor >= 0 || m.selCur >= 0):
-			lo, hi := m.selAnchor, m.selCur
-			if lo < 0 {
-				lo, hi = hi, lo
-			}
-			// rows are viewport-space (0-based); clamp the drag end to what
-			// is actually on screen so overdrags copy the visible tail
-			if hi >= len(m.vpLines) {
-				hi = len(m.vpLines) - 1
-			}
-			if lo >= len(m.vpLines) {
-				lo = len(m.vpLines) - 1
-			}
-			if m.vp.Height > 0 && lo >= 0 && hi >= lo && hi < len(m.vpLines) {
-				var sb strings.Builder
-				for i := lo; i <= hi; i++ {
-					sb.WriteString(stripANSI(m.vpLines[i]))
-					sb.WriteByte('\n')
-				}
-				text := strings.TrimRight(sb.String(), "\n")
-				if strings.TrimSpace(text) != "" {
-					if err := clipboard.WriteAll(text); err == nil {
-						m.showToast(fmt.Sprintf("copied %d lines", hi-lo+1))
-					}
-				}
-			}
-			m.selAnchor, m.selCur = -1, -1
+			m.copySelection()
+			// keep the anchor so the highlight stays visible until the user
+			// copies with ctrl+c, presses esc, or clicks elsewhere (opencode
+			// parity); Update's trailing syncViewport repaints the frame.
 			return m, nil
 		}
 		if m.selAnchor >= 0 || m.selCur >= 0 {
@@ -728,31 +728,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	// burst bookkeeping + arrow-as-caret when the box holds wrapped rows:
-	// up/down only scroll the transcript while the caret is on the first/
-	// last VISUAL row; inside the box they move the caret (and let the
-	// textarea viewport scroll the pasted content).
 	if _, isKey := msg.(tea.KeyMsg); isKey {
-		now := time.Now()
-		m.inBurst = now.Sub(m.lastKeyAt) < 30*time.Millisecond
-		m.lastKeyAt = now
-	}
-	if k, ok := msg.(tea.KeyMsg); ok {
-		total := wrappedRows(m)
-		if total > 1 {
-			switch k.String() {
-			case "up":
-				if m.input.LineInfo().RowOffset == 0 {
-					m.vp.LineUp(2)
-					return m, nil
-				}
-			case "down":
-				if m.input.LineInfo().RowOffset >= total-1 {
-					m.vp.LineDown(2)
-					return m, nil
-				}
-			}
-		}
+		m.lastKeyAt = time.Now()
 	}
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
@@ -766,6 +743,55 @@ func (m model) inPasteBurst() bool { return m.inBurst }
 func (m *model) showToast(msg string) {
 	m.toast = msg
 	m.toastAt = time.Now()
+}
+
+// clipboardWriter is the OS clipboard sink; a package var so tests can
+// capture copies without touching the real system clipboard.
+var clipboardWriter = clipboard.WriteAll
+
+// selActive reports whether a drag selection is live (0 is a valid row, so
+// the sentinel is -1 and OR is required).
+func (m model) selActive() bool { return m.selAnchor >= 0 || m.selCur >= 0 }
+
+// copySelection writes the selected viewport rows to the OS clipboard as
+// plain text and toasts "copied to clipboard" (opencode parity). Called on
+// mouse release AND again on ctrl+c so the selection can be re-copied while
+// the highlight stays visible. Returns whether text was copied.
+func (m *model) copySelection() bool {
+	if m.vp.Height <= 0 || len(m.vpLines) == 0 {
+		m.selAnchor, m.selCur = -1, -1
+		return false
+	}
+	lo, hi := m.selAnchor, m.selCur
+	if lo < 0 {
+		lo, hi = hi, lo
+	}
+	// rows are viewport-space (0-based); clamp both ends to what is on
+	// screen so overdrags copy the visible tail
+	hi = minInt(hi, len(m.vpLines)-1)
+	lo = minInt(lo, len(m.vpLines)-1)
+	if lo < 0 || hi < lo {
+		m.selAnchor, m.selCur = -1, -1
+		return false
+	}
+	var sb strings.Builder
+	for i := lo; i <= hi; i++ {
+		sb.WriteString(stripANSI(m.vpLines[i]))
+		sb.WriteByte('\n')
+	}
+	text := strings.TrimRight(sb.String(), "\n")
+	if strings.TrimSpace(text) == "" {
+		m.selAnchor, m.selCur = -1, -1
+		return false
+	}
+	if err := clipboardWriter(text); err != nil {
+		m.selAnchor, m.selCur = -1, -1
+		return false
+	}
+	// keep the anchor: the highlight stays visible until esc / a click
+	// elsewhere / quitting, so ctrl+c can copy the same span again
+	m.showToast("copied to clipboard")
+	return true
 }
 
 // submitPrompt sends the current input as a prompt. While a run is active the
@@ -863,7 +889,7 @@ func (m *model) runSlash(v string) tea.Cmd {
 	case "/model", "/provider":
 		m.over.openProviderMenu(m.agent.Keys())
 		return nil
-	case "/sessions":
+	case "/history", "/sessions":
 		m.over.openSessions(m.agent.Workspace())
 		return nil
 	case "/mcp":
@@ -1046,7 +1072,7 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 			m.pushOverlay()
 			m.over.openProviderMenu(m.agent.Keys())
 			return m, nil
-		case "/sessions":
+		case "/history", "/sessions":
 			m.pushOverlay()
 			m.over.openSessions(m.agent.Workspace())
 			return m, nil
@@ -1760,6 +1786,26 @@ func (m *model) syncInputHeight() {
 	}
 }
 
+// selRows returns the ordered [lo,hi] screen rows of the current selection
+// in viewport-frame space (0 = first visible row), or (-1,-1) when inactive
+// or scrolled out of view. Rows are screen-relative by design: a new press
+// re-anchors, so stale anchors simply clip to the current frame.
+func (m model) selRows() (int, int) {
+	if !m.selActive() || m.vp.Height <= 0 {
+		return -1, -1
+	}
+	lo, hi := m.selAnchor, m.selCur
+	if lo < 0 {
+		lo, hi = hi, lo
+	}
+	lo = clampInt(lo, 0, m.vp.Height-1)
+	hi = clampInt(hi, 0, m.vp.Height-1)
+	if lo > hi {
+		return -1, -1
+	}
+	return lo, hi
+}
+
 // sessionView is the main layout after the first prompt.
 func (m model) sessionView() string {
 	var b strings.Builder
@@ -1796,8 +1842,9 @@ func (m model) sessionView() string {
 	// layout (menuShed) and the panel body budget (menuPAvail): the chat
 	// shrinks first so menus get their full height on normal windows.
 	if m.over.mode != overlayNone {
+		sl, sh := m.selRows()
 		if m.vp.Height >= 3 {
-			b.WriteString(vpWithScrollbar(m.vp) + "\n")
+			b.WriteString(vpWithScrollbar(m.vp, sl, sh) + "\n")
 		}
 		switch m.menuShed {
 		case 0:
@@ -1811,7 +1858,8 @@ func (m model) sessionView() string {
 	}
 
 	// transcript viewport (content already synced, follow-lock applied).
-	b.WriteString(vpWithScrollbar(m.vp) + "\n")
+	sl, sh := m.selRows()
+	b.WriteString(vpWithScrollbar(m.vp, sl, sh) + "\n")
 
 	// approval modal
 	if m.approval != "" {
@@ -1829,7 +1877,9 @@ func (m model) sessionView() string {
 // vpWithScrollbar renders the viewport at exactly one extra column so the
 // chat box is the same width as every other box. The last column carries the
 // ember scrollbar when content overflows, or a blank column when it fits.
-func vpWithScrollbar(vp viewport.Model) string {
+// The sel parameter highlights the drag-selected rows (opencode parity):
+// rows swap to inverse video so the user can SEE what ctrl+c will copy.
+func vpWithScrollbar(vp viewport.Model, selLo, selHi int) string {
 	view := vp.View()
 	total := maxInt(1, vp.TotalLineCount())
 	visible := maxInt(1, vp.Height)
@@ -1845,6 +1895,9 @@ func vpWithScrollbar(vp viewport.Model) string {
 		} else if w < vp.Width {
 			lines[i] += strings.Repeat(" ", vp.Width-w)
 		}
+		if i >= selLo && i <= selHi {
+			lines[i] = selStyle.Render(clipANSI(lines[i], vp.Width))
+		}
 		if !overflows {
 			lines[i] += " "
 			continue
@@ -1856,6 +1909,13 @@ func vpWithScrollbar(vp viewport.Model) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func maxInt(a, b int) int {

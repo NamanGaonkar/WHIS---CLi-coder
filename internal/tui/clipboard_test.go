@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // TestLastTranscriptTextPrefersReply checks the picker: newest assistant
@@ -125,5 +128,97 @@ func TestSlashMenuHasCopyRow(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("slash menu is missing the /copy row")
+	}
+}
+
+// TestCopySelectionOpencodeParity pins the opencode selection model end to
+// end: release copies + toasts but KEEPS the selection visible; ctrl+c
+// copies again without quitting; esc clears it and reaches Interrupt.
+func TestCopySelectionOpencodeParity(t *testing.T) {
+	// force a color profile so the inverse-video selection SGR actually
+	// renders (the test env is headless and would otherwise strip styling)
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(orig)
+
+	var got string
+	old := clipboardWriter
+	clipboardWriter = func(s string) error { got = s; return nil }
+	defer func() { clipboardWriter = old }()
+
+	m := newTestModel(t)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = m2.(model)
+	m.splash = false
+	for i := 0; i < 30; i++ {
+		m.lines = append(m.lines, line{kind: "info", body: fmt.Sprintf("sel-line-%02d", i)})
+	}
+	k, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = k.(model)
+
+	// drag: press on row 2, motion to row 4, release (each Update result
+	// must be chained back or the next event lands on the pre-drag model)
+	k, _ = m.Update(tea.MouseMsg{Type: tea.MouseLeft, Action: tea.MouseActionPress, Y: 2})
+	m = k.(model)
+	k, _ = m.Update(tea.MouseMsg{Type: tea.MouseMotion, Action: tea.MouseActionMotion, Y: 4})
+	m = k.(model)
+	k, _ = m.Update(tea.MouseMsg{Type: tea.MouseRelease, Action: tea.MouseActionRelease, Y: 4})
+	m = k.(model)
+	if m.toast != "copied to clipboard" {
+		t.Fatalf("release should toast %q, got %q", "copied to clipboard", m.toast)
+	}
+	// clipboard must hold exactly viewport rows 2..4 (the visible tail of
+	// the transcript lives in vpLines; row 2 is NOT transcript line 2)
+	want := ""
+	for i := 2; i <= 4; i++ {
+		want += stripANSI(m.vpLines[i]) + "\n"
+	}
+	want = strings.TrimRight(want, "\n")
+	if got != want {
+		t.Fatalf("clipboard got %q, want the selected viewport rows %q", got, want)
+	}
+	if !m.selActive() {
+		t.Fatal("release cleared the selection — highlight must stay visible (opencode parity)")
+	}
+	sl, sh := m.selRows()
+	if sl != 2 || sh != 4 {
+		t.Fatalf("selection rows = [%d,%d], want [2,4]", sl, sh)
+	}
+	if !strings.Contains(m.View(), "\x1b[7m") {
+		t.Fatal("selected rows are not painted (no inverse-video SGR in frame)")
+	}
+
+	// ctrl+c re-copies the live selection and must NOT quit
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = k.(model)
+	if m.quitting {
+		t.Fatal("ctrl+c with a live selection must copy, not quit")
+	}
+
+	// esc clears the selection FIRST (press 1), and only then reaches
+	// Interrupt (press 2)
+	if !m.status.Spinning {
+		m.status.Spinning = true
+	}
+	m.agent = &syncInterruptAPI{}
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = k.(model)
+	if m.selActive() {
+		t.Fatal("esc did not clear the selection")
+	}
+	k, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = k.(model)
+	if !m.agent.(*syncInterruptAPI).hit {
+		t.Fatal("esc should reach Interrupt after the selection is cleared")
+	}
+}
+
+// TestCtrlCWithoutSelectionQuits keeps the plain quit path intact.
+func TestCtrlCWithoutSelectionQuits(t *testing.T) {
+	m := newTestModel(t)
+	k, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m2 := k.(model)
+	if !m2.quitting {
+		t.Fatal("ctrl+c with no selection must quit")
 	}
 }

@@ -381,6 +381,10 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 	}()
 	start := time.Now()
 	nudges := 0
+	// god-key esc: shell commands derive their timeout from the RUN context,
+	// so cancelling it (esc) kills a hung child (cmd /c date waiting on
+	// stdin) instantly instead of dead-waiting out the 120s tool timeout.
+	a.Tools.RunCtx = ctx
 
 	for turn := 0; turn < a.MaxTurn; turn++ {
 		msgs := a.buildMessages()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Markers maps project files to inferred build/test commands.
@@ -102,6 +103,12 @@ func SystemPrompt(workspace string, tools []string) string {
 	var b strings.Builder
 	b.WriteString("You are WHIS, an ultra-lean AI coding agent living in the user's terminal.\n\n")
 	fmt.Fprintf(&b, "Workspace: %s\n\n", workspace)
+	// current date injected so "what's today's date"-style questions are
+	// answered instantly from the prompt, never via a shell `date` call
+	// (cmd /c date on Windows blocks waiting for keyboard input)
+	now := time.Now()
+	_, week := now.ISOWeek()
+	fmt.Fprintf(&b, "Current date: %s (%s, ISO week %d).\n\n", now.Format("Monday, January 2, 2006"), now.Format("MST"), week)
 	b.WriteString(`Prime directives:
 1. FRESHNESS. Your training data is stale and you DO NOT know current facts
    (winners, scores, prices, releases, news, dates after your cutoff). For ANY

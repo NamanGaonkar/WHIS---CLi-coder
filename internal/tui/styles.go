@@ -55,6 +55,7 @@ var (
 
 	scrollThumbStyle lipgloss.Style
 	scrollTrackStyle lipgloss.Style
+	selStyle         lipgloss.Style // drag-selection highlight (inverse video)
 )
 
 // themeDef is one named palette.
@@ -134,6 +135,7 @@ func applyTheme(i int) {
 
 	scrollThumbStyle = lipgloss.NewStyle().Foreground(ember)
 	scrollTrackStyle = lipgloss.NewStyle().Foreground(deep)
+	selStyle = lipgloss.NewStyle().Reverse(true) // opencode-style inverse selection
 }
 
 func init() { applyTheme(0) }

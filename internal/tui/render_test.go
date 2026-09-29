@@ -26,7 +26,9 @@ func testModel() model {
 	ta.SetHeight(1)
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
-	return model{input: ta, vp: vp, planOpen: true, codeOpen: map[int]bool{}}
+	// mirror New(): no selection is live (0 is a VALID row, so the sentinel
+	// is -1 — zero values would read as a stuck selection)
+	return model{input: ta, vp: vp, planOpen: true, codeOpen: map[int]bool{}, selAnchor: -1, selCur: -1}
 }
 
 // TestRenderCacheHits verifies the memoized transcript renderer actually

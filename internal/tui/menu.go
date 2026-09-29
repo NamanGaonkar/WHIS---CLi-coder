@@ -117,27 +117,28 @@ func (o *overlay) openHelp(text string) {
 	o.lines = strings.Split(text, "\n")
 }
 
-// openSlashMenu shows the "/" command options.
+// openSlashMenu shows the "/" command options. Every label carries a
+// literal "/" prefix so rows VISIBLY read as commands (user request).
 func (o *overlay) openSlashMenu() {
 	o.mode = overlaySlashMenu
 	o.title = "COMMANDS"
 	o.cursor = 0
 	o.items = []menuItem{
-		{label: "mode", hint: "plan · ask · auto (how the agent acts)", value: "/mode"},
-		{label: "model", hint: "switch provider or model", value: "/model"},
-		{label: "provider", hint: "manage API keys & providers", value: "/provider"},
-		{label: "sessions", hint: "resume a session from this folder", value: "/sessions"},
-		{label: "task", hint: "run an isolated subagent task", value: "/task"},
-		{label: "new", hint: "fresh conversation (old one saved)", value: "/new"},
-		{label: "retry", hint: "re-run the last prompt from scratch", value: "/retry"},
-		{label: "compress", hint: "free context: squash old tool logs", value: "/compress"},
-		{label: "usage", hint: "tokens, cost and context for this session", value: "/usage"},
-		{label: "copy last answer", hint: "to clipboard · /copy prompt|output for other targets (also ctrl+y)", value: "/copy"},
-		{label: "mcp servers", hint: "connected MCP servers and their tools", value: "/mcp"},
-		{label: "undo", hint: "roll back last change", value: "/undo"},
-		{label: "init", hint: "(re)generate WHIS.md", value: "/init"},
-		{label: "help", hint: "commands & keys in a panel", value: "@help"},
-		{label: "themes", hint: "switch the TUI color palette", value: "/themes"},
+		{label: "/mode", hint: "plan · ask · auto (how the agent acts)", value: "/mode"},
+		{label: "/model", hint: "switch provider or model", value: "/model"},
+		{label: "/provider", hint: "manage API keys & providers", value: "/provider"},
+		{label: "/history", hint: "resume a past session (chat history) from this folder", value: "/history"},
+		{label: "/task", hint: "run an isolated subagent task", value: "/task"},
+		{label: "/new", hint: "fresh conversation (old one saved)", value: "/new"},
+		{label: "/retry", hint: "re-run the last prompt from scratch", value: "/retry"},
+		{label: "/compress", hint: "free context: squash old tool logs", value: "/compress"},
+		{label: "/usage", hint: "tokens, cost and context for this chat", value: "/usage"},
+		{label: "/copy", hint: "copy last answer · /copy prompt|output for other targets (also ctrl+y)", value: "/copy"},
+		{label: "/mcp servers", hint: "connected MCP servers and their tools", value: "/mcp"},
+		{label: "/undo", hint: "roll back last change", value: "/undo"},
+		{label: "/init", hint: "(re)generate WHIS.md", value: "/init"},
+		{label: "/help", hint: "commands & keys in a panel", value: "@help"},
+		{label: "/themes", hint: "switch the TUI color palette", value: "/themes"},
 	}
 }
 
@@ -415,15 +416,16 @@ func (o *overlay) scrollHelp(d int) {
 	}
 }
 
-// openSessions lists sessions for the current workspace.
+// openSessions lists past conversations for the current workspace
+// ("history" in the UI).
 func (o *overlay) openSessions(root string) {
 	o.mode = overlaySessions
-	o.title = "SESSIONS · THIS FOLDER"
+	o.title = "HISTORY · THIS FOLDER"
 	o.cursor = 0
 	o.items = nil
 	sums := session.ListFor(root)
 	if len(sums) == 0 {
-		o.items = append(o.items, menuItem{label: "no sessions in this folder yet", hint: "start chatting", disabled: true})
+		o.items = append(o.items, menuItem{label: "no history in this folder yet", hint: "start chatting", disabled: true})
 		return
 	}
 	for _, s := range sums {
