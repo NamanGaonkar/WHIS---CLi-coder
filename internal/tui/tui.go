@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/atotto/clipboard"
+
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,8 +118,21 @@ type model struct {
 	// clearing the new run's state (fixes delayed/doubled replies).
 	runSeq int
 
-	pasteExpand bool // ctrl+e: expand the clipped input pane for huge pastes
-	pasteChip   bool // big paste collapsed to a "pasted N lines" chip (Freebuff-style)
+	pasteExpand bool      // ctrl+e: expand the clipped input pane for huge pastes
+	pasteChip   bool      // big paste collapsed to a "pasted N lines" chip (Freebuff-style)
+	lastKeyAt   time.Time // burst detection: synthetic paste keys arrive <30ms apart
+	inBurst     bool      // last key was <30ms after the previous one
+
+	// drag-select copy (opencode-style): press in the chat area anchors a
+	// line-range selection, motion extends it, release copies to the
+	// clipboard with a status-bar toast. vpLines caches the exact viewport
+	// content lines the selection indexes into.
+	selAnchor int
+	selCur    int
+	vpLines   []string
+	toast     string
+	toastAt   time.Time
+	vpTop     int // frame row where the viewport starts (selection geometry)
 	// one queued live-usage event: syncStatus() runs after every event and
 	// would otherwise overwrite the fresh tok numbers the usage event just
 	// set (root cause of "tok 0" persisting after each turn).
@@ -361,6 +376,9 @@ func (m *model) syncViewport() {
 	if wasBottom {
 		m.vp.GotoBottom()
 	}
+	// exact visible lines for mouse drag-select copy (stripped plain text
+	// is what lands on the clipboard)
+	m.vpLines = strings.Split(m.vp.View(), "\n")
 
 	// click geometry for overlay menus. Frame ladder, session view:
 	//   header 1, sep 1, vp vpH, sep 1, border 1, padding 1, title 1,
@@ -533,6 +551,16 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if msg.String() == "enter" {
+				// burst guard: terminals WITHOUT bracketed paste (classic
+				// Windows conhost) deliver a paste as synthetic keystrokes,
+				// and every newline in the pasted text pressed enter —
+				// auto-submitting garbled fragments. Synthetic keys arrive
+				// <30ms apart; humans cannot. Enter mid-burst inserts a
+				// newline instead of submitting.
+				if m.inPasteBurst() {
+					m.input.InsertString("\n")
+					return m, nil
+				}
 				return m, m.submitPrompt(false)
 			}
 		}
@@ -637,6 +665,47 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// drag-select copy over the chat transcript (opencode-style): press
+		// in the viewport area anchors a line selection, motion extends it,
+		// release copies the plain text and toasts "copied N lines".
+		// Selection is in VIEWPORT line space; vpLines is filled by
+		// syncViewport every frame so indices stay exact even mid-scroll.
+		inChat := m.over.mode == overlayNone && !m.splash && msg.Y < m.vpTop+maxInt(0, m.vp.Height) && msg.Y >= m.vpTop
+		switch {
+		case msg.Type == tea.MouseLeft && m.menuMaxRows == 0:
+			if inChat {
+				m.selAnchor = msg.Y - m.vpTop
+				m.selCur = m.selAnchor
+			}
+		case msg.Action == tea.MouseActionMotion && (m.selAnchor >= 0 || m.selCur >= 0):
+			if m.vp.Height > 0 {
+				m.selCur = clampInt(msg.Y-m.vpTop, 0, maxInt(0, m.vp.Height-1))
+			}
+			return m, nil
+		case msg.Type == tea.MouseRelease && (m.selAnchor >= 0 || m.selCur >= 0):
+			lo, hi := m.selAnchor, m.selCur
+			if lo < 0 {
+				lo, hi = hi, lo
+			}
+			if m.vp.Height > 0 && lo >= 0 && hi >= lo && hi < len(m.vpLines) {
+				var sb strings.Builder
+				for i := lo; i <= hi; i++ {
+					sb.WriteString(stripANSI(m.vpLines[i]))
+					sb.WriteByte('\n')
+				}
+				text := strings.TrimRight(sb.String(), "\n")
+				if strings.TrimSpace(text) != "" {
+					if err := clipboard.WriteAll(text); err == nil {
+						m.showToast(fmt.Sprintf("copied %d lines", hi-lo+1))
+					}
+				}
+			}
+			m.selAnchor, m.selCur = -1, -1
+			return m, nil
+		}
+		if m.selAnchor >= 0 || m.selCur >= 0 {
+			m.selAnchor, m.selCur = -1, -1 // any other mouse event cancels
+		}
 		switch {
 		case msg.Type == tea.MouseWheelUp || msg.Button == tea.MouseButtonWheelUp:
 			m.vp.LineUp(3)
@@ -647,8 +716,44 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	// burst bookkeeping + arrow-as-caret when the box holds wrapped rows:
+	// up/down only scroll the transcript while the caret is on the first/
+	// last VISUAL row; inside the box they move the caret (and let the
+	// textarea viewport scroll the pasted content).
+	if _, isKey := msg.(tea.KeyMsg); isKey {
+		now := time.Now()
+		m.inBurst = now.Sub(m.lastKeyAt) < 30*time.Millisecond
+		m.lastKeyAt = now
+	}
+	if k, ok := msg.(tea.KeyMsg); ok {
+		total := wrappedRows(m)
+		if total > 1 {
+			switch k.String() {
+			case "up":
+				if m.input.LineInfo().RowOffset == 0 {
+					m.vp.LineUp(2)
+					return m, nil
+				}
+			case "down":
+				if m.input.LineInfo().RowOffset >= total-1 {
+					m.vp.LineDown(2)
+					return m, nil
+				}
+			}
+		}
+	}
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// inPasteBurst reports whether the last key arrived mid synthetic-paste
+// burst (see the enter guard in update()).
+func (m model) inPasteBurst() bool { return m.inBurst }
+
+// showToast raises a transient status-bar confirmation (auto-clears).
+func (m *model) showToast(msg string) {
+	m.toast = msg
+	m.toastAt = time.Now()
 }
 
 // submitPrompt sends the current input as a prompt. While a run is active the
@@ -1643,6 +1748,9 @@ func (m model) sessionView() string {
 
 	// viewport content/dimensions are synced in Update -> syncViewport;
 	// the view here only READS the synced viewport (pure render).
+	// vpTop is the frame row where the viewport starts (header occupies
+	// row 0, the viewport begins right after the ribbon line).
+	m.vpTop = 1
 
 	// overlay-open layout: the menu panel REPLACES the transcript and sits
 	// DIRECTLY ABOVE the input box — it never rises over or above the text
@@ -1721,11 +1829,15 @@ func maxInt(a, b int) int {
 
 // statusBar is the simplified bottom band: mode + run timer while working.
 // Rendered as its own fully black padded strip (separate from the input box)
-// with uniform full width. Token counters were removed by request.
+// with uniform full width. Token counters were removed by request. A drag-
+// select copy toast ("copied N lines") replaces the left side for 2s.
 func (m model) statusBar() string {
 	timer := ""
 	if m.status.Spinning {
 		timer = " · " + m.status.Elapsed + " · esc stops"
+	}
+	if m.toast != "" && time.Since(m.toastAt) < 2*time.Second {
+		return okStyle.Render(" ✔ " + m.toast + " ")
 	}
 	mode := m.agent.Status().Mode
 	bar := fmt.Sprintf(" mode %s%s", mode, timer)
