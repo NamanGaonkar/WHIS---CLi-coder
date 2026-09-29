@@ -138,31 +138,70 @@ func renderOneLine(m model, l line, vw int) string {
 // renderTranscriptCached builds the viewport content from cached per-line
 // renders. Semantically identical to the old renderTranscript; only faster
 // (unchanged lines come from the memo cache instead of re-running glamour).
+//
+// Spacing: prose blocks (md/user/done/plan and the streaming tail) keep a
+// full blank line between them, but runs of UTILITY lines (tool calls,
+// tool output, info, error) are packed tightly — a web_search dump or a
+// tool-call streak used to render with a blank line before AND after every
+// grey line, which read as broken/unprofessional gaps. A utility run joins
+// with single newlines and gets ONE blank line separating it from prose.
 func (m model) renderTranscriptCached(vw int) string {
-	var parts []string
-	for _, l := range m.lines {
-		parts = append(parts, rcLine(m, l, vw))
+	isUtil := func(l line) bool {
+		switch l.kind {
+		case "tool", "toolout", "info", "error":
+			return true
+		}
+		return false
 	}
+	type block struct {
+		util bool
+		rows []string
+	}
+	var blocks []block
+	flush := func(util bool, rows []string) {
+		if len(rows) > 0 {
+			blocks = append(blocks, block{util: util, rows: rows})
+		}
+	}
+	var cur []string
+	curUtil := false
+	for i, l := range m.lines {
+		u := isUtil(l)
+		if i == 0 || u != curUtil {
+			flush(curUtil, cur)
+			cur = nil
+			curUtil = u
+		}
+		cur = append(cur, rcLine(m, l, vw))
+	}
+	flush(curUtil, cur)
 	if m.streamBuf != "" {
 		if m.status.Spinning {
 			// while working: show a live line count, not the dumping text
 			lines := strings.Count(strings.TrimSpace(m.streamBuf), "\n") + 1
-			parts = append(parts, workingStyle.Render(fmt.Sprintf("... composing reply (%d lines so far)", lines)))
+			flush(false, []string{workingStyle.Render(fmt.Sprintf("... composing reply (%d lines so far)", lines))})
 		} else {
-			parts = append(parts, renderCollapsible(m.streamBuf, vw, m.codeOpenFor(-1)))
+			flush(false, []string{renderCollapsible(m.streamBuf, vw, m.codeOpenFor(-1))})
 		}
 	}
-	if len(parts) == 0 {
+	if len(blocks) == 0 {
 		return ""
 	}
-	// ANSI-aware hard clip to the viewport width. Block structure (blank
-	// line between paragraphs/blocks) is preserved exactly. Clipping is
-	// memoized too: renderXform caches the clipped form per part.
-	clipped := make([]string, 0, len(parts))
-	for _, p := range parts {
-		clipped = append(clipped, clipPartCached(p, vw))
+	// assemble: ANSI-aware hard clip per row (memoized), utility blocks
+	// joined tight inside, one blank line between blocks.
+	var out []string
+	for _, b := range blocks {
+		clipped := make([]string, 0, len(b.rows))
+		for _, p := range b.rows {
+			clipped = append(clipped, clipPartCached(p, vw))
+		}
+		sep := "\n\n"
+		if b.util {
+			sep = "\n"
+		}
+		out = append(out, strings.Join(clipped, sep))
 	}
-	return strings.Join(clipped, "\n\n")
+	return strings.Join(out, "\n\n")
 }
 
 // clipPartCached memoizes the width-clipping of an already-rendered part.

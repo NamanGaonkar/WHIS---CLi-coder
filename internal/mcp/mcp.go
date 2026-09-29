@@ -104,13 +104,22 @@ type Manager struct {
 	tools    map[string]*mcp.Tool          // "server__tool" -> tool def
 	order    []string                      // namespaced names, stable order
 	servers  []string                      // connected server names, stable
+	root     string                        // workspace root: filesystem__ relative paths resolve against it
 
-	mu sync.Mutex // guards sessions/tools/order/servers: background connects race the agent loop
+	mu sync.Mutex // guards sessions/tools/order/servers/root: background connects race the agent loop
 }
 
-// NewManager builds an idle manager.
+// NewManager builds an idle manager. SetRoot may be called after
+// construction once the workspace is known (before first tool dispatch).
 func NewManager() *Manager {
 	return &Manager{sessions: map[string]*mcp.ClientSession{}, tools: map[string]*mcp.Tool{}}
+}
+
+// SetRoot records the workspace root for filesystem path normalization.
+func (m *Manager) SetRoot(root string) {
+	m.mu.Lock()
+	m.root = root
+	m.mu.Unlock()
 }
 
 // Connect spawns and initializes every configured server. Individual
@@ -356,10 +365,18 @@ func (m *Manager) ManifestJSON(ns string) ([]byte, error) {
 
 // CallTool routes a call to the owning server, caps the output, and
 // returns (text, ok).
+//
+// Filesystem path normalization: the standard
+// @modelcontextprotocol/server-filesystem rejects relative paths and paths
+// outside its configured roots. Models routinely emit bare names ("landing"",
+// "index.html"), so any filesystem__ call with a relative string "path"
+// argument is resolved to an absolute path against the workspace root before
+// dispatch. Non-string / absolute / non-filesystem args pass through.
 func (m *Manager) CallTool(ctx context.Context, ns string, args json.RawMessage) (string, bool) {
 	server, _, found := strings.Cut(ns, nsSep)
 	m.mu.Lock()
 	sess := m.sessions[server]
+	root := m.root
 	m.mu.Unlock()
 	if !found || sess == nil {
 		return "unknown mcp tool: " + ns, false
@@ -367,6 +384,9 @@ func (m *Manager) CallTool(ctx context.Context, ns string, args json.RawMessage)
 	var params any
 	if len(args) > 0 {
 		_ = json.Unmarshal(args, &params)
+	}
+	if server == "filesystem" {
+		params = normalizeFSPaths(params, root)
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
@@ -385,6 +405,41 @@ func (m *Manager) CallTool(ctx context.Context, ns string, args json.RawMessage)
 		}
 	}
 	return capOutput(b.String()), true
+}
+
+// normalizeFSPaths rewrites any string field named "path" (or "paths"
+// entries) to an absolute path rooted at the workspace when it is relative.
+// Returns the original value untouched when root is unknown or the shape is
+// not a recognized argument map.
+func normalizeFSPaths(params any, root string) any {
+	if root == "" || params == nil {
+		return params
+	}
+	pm, ok := params.(map[string]any)
+	if !ok {
+		return params
+	}
+	norm := func(v any) any {
+		s, ok := v.(string)
+		if !ok || s == "" || filepath.IsAbs(s) {
+			return v
+		}
+		if abs, err := filepath.Abs(filepath.Join(root, s)); err == nil {
+			return abs
+		}
+		return v
+	}
+	if p, ok := pm["path"]; ok {
+		pm["path"] = norm(p)
+	}
+	if ps, ok := pm["paths"].([]any); ok {
+		out := make([]any, len(ps))
+		for i, p := range ps {
+			out[i] = norm(p)
+		}
+		pm["paths"] = out
+	}
+	return pm
 }
 
 // capOutput applies WHIS's standard truncation to external tool output.

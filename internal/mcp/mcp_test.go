@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,29 @@ func TestToolDefStripsMetaFields(t *testing.T) {
 // TestManagerConnectAndCall spins up a REAL MCP server over real stdio
 // (the SDK's in-memory transport would not exercise process lifecycle),
 // lists its tools, and calls one — the whole host path end to end.
+// Filesystem path normalization: relative "path" args resolve against the
+// workspace root (the standard filesystem server rejects relative paths);
+// absolute paths, other fields and non-filesystem shapes pass through.
+func TestNormalizeFSPaths(t *testing.T) {
+	p := normalizeFSPaths(map[string]any{"path": "landing"}, "C:/work")
+	m := p.(map[string]any)
+	got := m["path"].(string)
+	if !filepath.IsAbs(got) || !strings.HasSuffix(got, "landing") {
+		t.Fatalf("relative path not resolved to workspace root: %q", got)
+	}
+	p2 := normalizeFSPaths(map[string]any{"path": "C:/work/landing"}, "C:/work")
+	if got := p2.(map[string]any)["path"].(string); got != "C:/work/landing" {
+		t.Fatalf("absolute path must pass through unchanged: %q", got)
+	}
+	p3 := normalizeFSPaths(map[string]any{"query": "x"}, "C:/work")
+	if _, touched := p3.(map[string]any)["path"]; touched {
+		t.Fatal("non-path fields must not be touched")
+	}
+	if r := normalizeFSPaths(map[string]any{"path": "x"}, ""); r.(map[string]any)["path"] != "x" {
+		t.Fatal("empty root must pass through unchanged")
+	}
+}
+
 func TestManagerConnectAndCall(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go binary unavailable")

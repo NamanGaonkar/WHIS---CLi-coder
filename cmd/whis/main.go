@@ -154,6 +154,7 @@ func main() {
 			fatal(err)
 		}
 		mcpMgr := mcp.NewManager()
+		mcpMgr.SetRoot(root)
 		defer mcpMgr.Close()
 		for _, w := range a.AttachMCP(mcpMgr) {
 			fmt.Fprintln(os.Stderr, "whis: warning:", w)
@@ -168,6 +169,7 @@ func main() {
 	// MCP: opt-in via ~/.whis/mcp.json. Missing/empty config = zero spawns,
 	// zero latency, zero prompt bloat. Failures warn, never block boot.
 	mcpMgr := mcp.NewManager()
+	mcpMgr.SetRoot(root)
 	for _, w := range a.AttachMCP(mcpMgr) {
 		fmt.Fprintln(os.Stderr, "whis: warning:", w)
 	}
