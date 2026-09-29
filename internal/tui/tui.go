@@ -162,9 +162,10 @@ func (m *model) pushOverlay() {
 
 // line is one transcript entry.
 type line struct {
-	kind string // "user" | "md" | "plan" | "tool" | "toolout" | "error" | "info" | "done"
-	body string
-	n    int // index for codeOpen maps (md lines)
+	kind  string // "user" | "md" | "plan" | "tool" | "toolout" | "error" | "info" | "done"
+	body  string
+	n     int    // index for codeOpen maps (md lines)
+	stamp string // frozen elapsed label for done lines (render-cache safe)
 }
 
 // TUILine is a transcript line produced outside the streaming loop.
@@ -337,7 +338,9 @@ func (m *model) syncViewport() {
 		// non-viewport rows: header 1 + sep 1 + input (inRows+2) + pad 1 + status 1
 		m.vp.Height = clampInt(m.height-6-inRows, 3, m.height)
 	}
-	m.vp.SetContent(m.renderTranscript(vw))
+	// memoized render: unchanged transcript lines come from the cache instead
+	// of re-running glamour every frame (paste/esc/stream backpressure fix)
+	m.vp.SetContent(m.renderTranscriptCached(vw))
 	if wasBottom {
 		m.vp.GotoBottom()
 	}
@@ -996,6 +999,7 @@ func (m model) activateOverlay() (tea.Model, tea.Cmd) {
 		}
 		m.over = overlay{}
 		applyTheme(idx)
+		rcReset() // styles changed: every cached render is stale
 		m.lines = append(m.lines, line{kind: "info", body: "theme -> " + themes[idx].name})
 		return m, nil
 
@@ -1153,7 +1157,10 @@ func (m *model) flushStream() {
 		}
 		if summary != "" {
 			m.hasDone = true
-			m.lines = append(m.lines, line{kind: "done", body: summary})
+			if m.runLast == 0 {
+				m.runLast = time.Since(m.runStart)
+			}
+			m.lines = append(m.lines, line{kind: "done", body: summary, stamp: fmtDur(m.runLast)})
 		}
 		m.streamBuf = ""
 	}
