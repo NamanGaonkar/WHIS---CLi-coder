@@ -51,8 +51,23 @@ func Run(current string) error {
 		return fmt.Errorf("cannot reach GitHub releases: %w", err)
 	}
 	if !newer(current, latest) {
-		fmt.Printf("whis is up to date (%s).\n", current)
-		return nil
+		// Same version can still be a NEW build: when a release is re-published
+		// under the same tag (e.g. perf fixes shipped as v0.2.23 again), the
+		// semver compare sees no bump. Detect it by comparing the running
+		// binary's checksum with the release's published .sha256. Only the
+		// exact current version is consulted so a locally-built dev binary
+		// with a bogus version string never triggers spurious downloads.
+		if norm(current) == norm(latest) {
+			if needs, err := releaseRebuilt(current); err == nil && needs {
+				fmt.Printf("%s was re-published with fixes — updating...\n", latest)
+			} else {
+				fmt.Printf("whis is up to date (%s).\n", current)
+				return nil
+			}
+		} else {
+			fmt.Printf("whis is up to date (%s).\n", current)
+			return nil
+		}
 	}
 	fmt.Printf("updating %s -> %s ...\n", current, latest)
 
@@ -129,6 +144,42 @@ func norm(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "v"
 // newer reports whether latest is strictly newer than current. Dev suffixes
 // ("v0.2.11-test") count as their base version, so a dev build never
 // "updates" itself down to an older published release.
+// releaseRebuilt reports whether the published checksum for the current
+// version's asset differs from the running binary (i.e. the release was
+// rebuilt/re-published under the same tag). A checksum fetch failure or an
+// unknown current version returns an error: callers treat that as
+// "up to date" — never force a download on a maybe.
+func releaseRebuilt(current string) (bool, error) {
+	if !strings.HasPrefix(strings.ToLower(norm(current)), "v") {
+		return false, fmt.Errorf("non-release version %q", current)
+	}
+	sum, err := fetchText(assetURL(assetName() + ".sha256"))
+	if err != nil {
+		return false, err
+	}
+	want := strings.Fields(sum)
+	if len(want) == 0 {
+		return false, fmt.Errorf("empty checksum file")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
+	if resolved, lerr := filepath.EvalSymlinks(exe); lerr == nil {
+		exe = resolved
+	}
+	f, err := os.Open(exe)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	got := sha256.New()
+	if _, err := io.Copy(got, f); err != nil {
+		return false, err
+	}
+	return !strings.EqualFold(hex.EncodeToString(got.Sum(nil)), strings.TrimSpace(want[0])), nil
+}
+
 func newer(current, latest string) bool {
 	c, l := verNums(current), verNums(latest)
 	for i := 0; i < 3; i++ {
