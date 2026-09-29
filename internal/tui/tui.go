@@ -1404,15 +1404,10 @@ func inpView(m model) string {
 	limit := m.inputRowLimit()
 	val := m.input.Value()
 	lines := strings.Split(val, "\n")
-	wide := false
-	for _, ln := range lines {
-		if visWidth(ln) > inner {
-			wide = true
-			break
-		}
-	}
-	if m.pasteExpand || (len(lines) <= limit && !wide) {
-		// normal: the genuine textarea (bounded by its synced height)
+	// normal path whenever the WRAPPED visual rows fit the pane: the genuine
+	// textarea (height synced, text visibly wrapping row by row). The tail
+	// preview only takes over once wrapping alone would exceed the cap.
+	if m.pasteExpand || wrappedRows(m) <= limit {
 		return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(m.input.View())
 	}
 	// clipped preview: marker + last rows, tail-shown, hard horizontal clip.
@@ -1465,13 +1460,33 @@ func (m model) inputRowLimit() int {
 	return base
 }
 
-// syncInputHeight keeps the textarea's visible pane at min(buffer lines,
-// row limit) rows. Called after every message, so typing, pasting and
-// submits all resize the box correctly; the textarea viewport follows the
+// wrappedRows counts the VISUAL rows the buffer occupies at the box's wrap
+// width. bubbles word-wraps long lines internally; the box must grow with
+// that wrap (Freebuff-style: text diverts to the next row and the box gets
+// one row taller) instead of scrolling a single wrapped row sideways.
+func wrappedRows(m model) int {
+	innerW := clampInt(m.width-4, 10, m.width) // mirrors the SetWidth call
+	total := 0
+	for _, ln := range strings.Split(m.input.Value(), "\n") {
+		rows := (visWidth(ln) + innerW - 1) / innerW
+		if rows < 1 {
+			rows = 1
+		}
+		total += rows
+		if total > 100000 { // absurd paste guard; the pane cap applies anyway
+			break
+		}
+	}
+	return total
+}
+
+// syncInputHeight keeps the textarea's visible pane at min(WRAPPED visual
+// rows, row limit). Called after every message, so typing, wrapping and
+// pastes all resize the box correctly; the textarea viewport follows the
 // cursor, so the end of the content stays visible when clipped.
 func (m *model) syncInputHeight() {
 	limit := m.inputRowLimit()
-	h := m.input.LineCount()
+	h := wrappedRows(*m)
 	if h > limit {
 		h = limit
 	}
