@@ -5,12 +5,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 
 	"whis/internal/provider"
 )
@@ -114,6 +117,7 @@ type model struct {
 	runSeq int
 
 	pasteExpand bool // ctrl+e: expand the clipped input pane for huge pastes
+	pasteChip   bool // big paste collapsed to a "pasted N lines" chip (Freebuff-style)
 	// one queued live-usage event: syncStatus() runs after every event and
 	// would otherwise overwrite the fresh tok numbers the usage event just
 	// set (root cause of "tok 0" persisting after each turn).
@@ -241,7 +245,16 @@ func New(a AgentAPI) tea.Model {
 	return model{agent: a, input: ta, vp: vp, planOpen: true, splash: true}
 }
 
-func (m model) Init() tea.Cmd { return textarea.Blink }
+// Init enables bracketed paste HERE (inside the running program, after
+// raw mode is set) — belt and braces with the pre-program write in main,
+// which some terminals drop because the mode is enabled before the TUI
+// takes over the tty. Without the mode, a multi-line paste arrives as
+// synthetic keystrokes and every newline in the pasted text literally
+// pressed enter, auto-submitting a garbled prompt.
+func (m model) Init() tea.Cmd {
+	fmt.Print("\x1b[?2004h")
+	return textarea.Blink
+}
 
 // Update syncs the viewport AFTER every message is applied. CRITICAL: the
 // viewport MUST be fed content here and NOT in View() — View's mutations
@@ -399,7 +412,23 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// menu and swallow the clipboard as menu input).
 		if msg.Paste {
 			m.input.InsertString(string(msg.Runes))
+			// a paste that wraps past the pane cap collapses to the 2-row
+			// chip ("pasted N lines — enter sends ALL") like the Freebuff
+			// composer: the buffer keeps every byte, the box stays small.
+			// Typing or ctrl+e re-opens the real editor.
+			if wrappedRows(m) > m.inputRowLimit() {
+				m.pasteChip = true
+				m.pasteExpand = false
+			}
 			return m, nil
+		}
+		// direct editing reopens the editor from the paste chip; arrows
+		// scroll the expanded editor so pasted content stays reviewable
+		if m.pasteChip {
+			switch msg.Type {
+			case tea.KeyRunes, tea.KeyBackspace, tea.KeyDelete, tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight:
+				m.pasteChip = false
+			}
 		}
 		// keyboard scrolling of the transcript (chat history)
 		if m.over.mode == overlayNone {
@@ -494,6 +523,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if msg.String() == "ctrl+e" {
 				m.pasteExpand = !m.pasteExpand
+				if m.pasteExpand {
+					m.pasteChip = false // expanding shows the real editor
+				}
 				return m, nil
 			}
 			if msg.String() == "ctrl+t" {
@@ -625,6 +657,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // fix). During the splash phase empty submits do nothing.
 func (m *model) submitPrompt(splash bool) tea.Cmd {
 	v := strings.TrimSpace(m.input.Value())
+	defer func() {
+		m.pasteChip = false
+		m.pasteExpand = false
+	}()
 	if v == "" {
 		return nil
 	}
@@ -1404,6 +1440,17 @@ func inpView(m model) string {
 	limit := m.inputRowLimit()
 	val := m.input.Value()
 	lines := strings.Split(val, "\n")
+	// Freebuff-style chip: big paste collapsed to a marker + preview row.
+	if m.pasteChip && !m.pasteExpand {
+		words := len(strings.Fields(val))
+		marker := dimStyle.Render(fmt.Sprintf("pasted %d lines · %d words — whis receives ALL of it · ctrl+e edit · enter sends", len(lines), words))
+		last := lines[len(lines)-1]
+		r := []rune(last)
+		if len(r) > inner {
+			r = append([]rune("…"), r[len(r)-inner:]...)
+		}
+		return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(marker + "\n" + string(r))
+	}
 	// normal path whenever the WRAPPED visual rows fit the pane: the genuine
 	// textarea (height synced, text visibly wrapping row by row). The tail
 	// preview only takes over once wrapping alone would exceed the cap.
@@ -1460,19 +1507,16 @@ func (m model) inputRowLimit() int {
 	return base
 }
 
-// wrappedRows counts the VISUAL rows the buffer occupies at the box's wrap
-// width. bubbles word-wraps long lines internally; the box must grow with
-// that wrap (Freebuff-style: text diverts to the next row and the box gets
-// one row taller) instead of scrolling a single wrapped row sideways.
+// wrappedRows counts the VISUAL rows the buffer occupies by porting
+// bubbles' textarea wrap() 1:1 (same greedy space-wrap, same hard-breaks,
+// same uniseg width math) at the textarea's OWN width — the count matches
+// what View() actually renders, so the box auto-expands exactly one row per
+// wrap with zero drift (the approximate counter under-counted and caused
+// gap/hidden-row artifacts while typing).
 func wrappedRows(m model) int {
-	innerW := clampInt(m.width-4, 10, m.width) // mirrors the SetWidth call
 	total := 0
 	for _, ln := range strings.Split(m.input.Value(), "\n") {
-		rows := (visWidth(ln) + innerW - 1) / innerW
-		if rows < 1 {
-			rows = 1
-		}
-		total += rows
+		total += len(wrapRunes([]rune(ln), m.input.Width()))
 		if total > 100000 { // absurd paste guard; the pane cap applies anyway
 			break
 		}
@@ -1480,15 +1524,90 @@ func wrappedRows(m model) int {
 	return total
 }
 
+// wrapRunes is bubbles/textarea's wrap() ported verbatim (unicode.IsSpace
+// batching, double-width tail guard, trailing-space compensation) so the
+// row count equals the textarea's internal wrap exactly.
+func wrapRunes(runes []rune, width int) [][]rune {
+	if width <= 0 {
+		width = 1
+	}
+	var (
+		lines  = [][]rune{{}}
+		word   = []rune{}
+		row    int
+		spaces int
+	)
+	for _, r := range runes {
+		if unicode.IsSpace(r) {
+			spaces++
+		} else {
+			word = append(word, r)
+		}
+
+		if spaces > 0 {
+			if uniseg.StringWidth(string(lines[row]))+uniseg.StringWidth(string(word))+spaces > width {
+				row++
+				lines = append(lines, []rune{})
+				lines[row] = append(lines[row], word...)
+				lines[row] = append(lines[row], spacesRunes(spaces)...)
+				spaces = 0
+				word = nil
+			} else {
+				lines[row] = append(lines[row], word...)
+				lines[row] = append(lines[row], spacesRunes(spaces)...)
+				spaces = 0
+				word = nil
+			}
+		} else {
+			// If the last character is a double-width rune, then we may not
+			// be able to add it to this line as it might cause us to go
+			// past the width.
+			if len(word) == 0 {
+				continue
+			}
+			lastCharLen := runewidth.RuneWidth(word[len(word)-1])
+			if uniseg.StringWidth(string(word))+lastCharLen > width {
+				// If the current line has any content, move to the next
+				// line because the current word fills the entire line.
+				if len(lines[row]) > 0 {
+					row++
+					lines = append(lines, []rune{})
+				}
+				lines[row] = append(lines[row], word...)
+				word = nil
+			}
+		}
+	}
+
+	if uniseg.StringWidth(string(lines[row]))+uniseg.StringWidth(string(word))+spaces >= width {
+		lines = append(lines, []rune{})
+		lines[row+1] = append(lines[row+1], word...)
+		// extra trailing space keeps soft-wrap navigation consistent with
+		// the textarea's own behavior
+		spaces++
+		lines[row+1] = append(lines[row+1], spacesRunes(spaces)...)
+	} else {
+		lines[row] = append(lines[row], word...)
+		spaces++
+		lines[row] = append(lines[row], spacesRunes(spaces)...)
+	}
+	return lines
+}
+
+func spacesRunes(n int) []rune { return []rune(strings.Repeat(" ", n)) }
+
 // syncInputHeight keeps the textarea's visible pane at min(WRAPPED visual
-// rows, row limit). Called after every message, so typing, wrapping and
-// pastes all resize the box correctly; the textarea viewport follows the
-// cursor, so the end of the content stays visible when clipped.
+// rows, row limit) — the box AUTO-EXPANDS one row per wrap until the cap.
+// A big paste collapses the pane to the 2-row chip form instead (pasteChip;
+// typing or ctrl+e brings the real editor back).
 func (m *model) syncInputHeight() {
 	limit := m.inputRowLimit()
 	h := wrappedRows(*m)
 	if h > limit {
 		h = limit
+	}
+	if m.pasteChip && !m.pasteExpand && h >= limit {
+		h = 2 // chip form: marker + preview row
 	}
 	if h < 1 {
 		h = 1
