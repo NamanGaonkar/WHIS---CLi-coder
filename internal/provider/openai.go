@@ -97,8 +97,12 @@ func (o *openaiCompatible) Name() string  { return o.name }
 func (o *openaiCompatible) Label() string { return o.model }
 
 type oaMessage struct {
-	Role       string   `json:"role"`
-	Content    any      `json:"content,omitempty"`
+	Role string `json:"role"`
+	// content MUST always serialize (no omitempty): DeepSeek's strict body
+	// deserializer rejects assistant messages without an explicit content
+	// field (HTTP 422 "failed to deserialize the JSON body"), and an empty
+	// assistant reply historically produced exactly that shape.
+	Content    any      `json:"content"`
 	ToolCallID string   `json:"tool_call_id,omitempty"`
 	ToolCalls  []oaCall `json:"tool_calls,omitempty"`
 }
@@ -125,9 +129,9 @@ func toOAMessages(msgs []Message) []oaMessage {
 	out := make([]oaMessage, 0, len(msgs))
 	for _, m := range msgs {
 		om := oaMessage{Role: m.Role, ToolCallID: m.ToolCallID}
-		if m.Content != "" {
-			om.Content = m.Content
-		}
+		// always a string: an omitted/empty content field is what made
+		// DeepSeek 422 on sessions that contained an empty assistant reply
+		om.Content = m.Content
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			for _, tc := range m.ToolCalls {
 				var c oaCall

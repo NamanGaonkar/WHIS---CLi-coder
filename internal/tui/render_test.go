@@ -115,6 +115,23 @@ func TestEscInterruptsSynchronously(t *testing.T) {
 	}
 }
 
+// TestPasteBypassesHijacks: a bracketed paste is delivered as ONE KeyRunes
+// message with Paste=true and must land in the input verbatim — never open
+// the slash menu (a paste starting with "/" on an empty box used to be
+// eaten as menu input) and never trip any other key hijack.
+func TestPasteBypassesHijacks(t *testing.T) {
+	paste := tea.KeyMsg{Type: tea.KeyRunes, Paste: true, Runes: []rune("/make me a plan with ? and / inside")}
+	m := testModel()
+	m2, _ := m.Update(paste)
+	mm := m2.(model)
+	if got := mm.input.Value(); got != string(paste.Runes) {
+		t.Fatalf("paste text did not land in the input verbatim: %q", got)
+	}
+	if mm.over.mode != overlayNone {
+		t.Fatal("paste opened an overlay (slash-menu hijack fired on pasted text)")
+	}
+}
+
 // syncInterruptAPI records Interrupt calls; everything else is a stub.
 type syncInterruptAPI struct{ hit bool }
 

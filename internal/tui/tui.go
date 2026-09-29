@@ -385,6 +385,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "ctrl+d":
 			m.quitting = true
 			return m, tea.Quit
+		}		// bracketed paste: the terminal wrapped the clipboard in ESC[200~ /
+		// ESC[201~ and bubbletea delivers it as ONE KeyRunes message with
+		// Paste=true (its String() deliberately reports "ctrl+v", which makes
+		// bubbles' textarea trigger an OS-clipboard read instead of using the
+		// actual paste payload). Insert the payload at the cursor directly —
+		// verbatim, one shot, and never route through the slash/menu hijacks
+		// (a paste starting with "/" on an empty box used to open the command
+		// menu and swallow the clipboard as menu input).
+		if msg.Paste {
+			m.input.InsertString(string(msg.Runes))
+			return m, nil
 		}
 		// keyboard scrolling of the transcript (chat history)
 		if m.over.mode == overlayNone {

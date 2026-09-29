@@ -221,13 +221,35 @@ func main() {
 	// motion (CellMotion only reports while a button is held): without it the
 	// TUI never receives wheel events (scrollbar stays dead).
 	p := tea.NewProgram(tui.New(adapter), tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// Bracketed paste: bubbletea v1.2.4 PARSES the ESC[200~/ESC[201~ wrap
+	// into a single paste message but (pre-v1.3) has no option to request
+	// the terminal mode. Enable it ourselves; restoreTerminal() disables it
+	// on every exit path. Without the mode a paste arrives as a burst of
+	// synthetic keystrokes and a paste starting with "/" on an empty box
+	// opened the command menu and swallowed the clipboard as menu input.
+	fmt.Print("\x1b[?2004h")
 	// Watch for a takeover request from a newer window. p.Send is safe as
 	// soon as NewProgram returns (ctx is initialized there), so start the
 	// watcher before Run — the first request politely closes THIS session.
 	l.WatchForTakeover(func() { p.Send(tui.TakeoverMsg{}) })
 	if _, err := p.Run(); err != nil {
+		restoreTerminal()
 		fatal(err)
 	}
+	restoreTerminal()
+}
+
+// restoreTerminal force-disables the input modes whis enables (mouse
+// tracking, bracketed paste) and re-shows the cursor AFTER the Bubble Tea
+// program exits. bubbletea unwinds these itself on clean exits, but any
+// missed path leaked mouse-tracking mode: the shell then interpreted mouse
+// reports as typed text ("[<51;64;22M") and PowerShell threw ParserErrors
+// on every line after closing whis. These sequences are idempotent and
+// harmless when the modes are already off.
+func restoreTerminal() {
+	fmt.Print("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l") // mouse off
+	fmt.Print("\x1b[?2004l")                                  // bracketed paste off
+	fmt.Print("\x1b[?25h")                                    // cursor show
 }
 
 // mcpPresets are one-command templates: name -> builder that asks for the

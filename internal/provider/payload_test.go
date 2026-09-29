@@ -60,6 +60,46 @@ func TestDeepSeekPayloadKeepsThinking(t *testing.T) {
 	}
 }
 
+// DeepSeek's deserializer rejects assistant messages without an explicit
+// content field (HTTP 422 "failed to deserialize the JSON body"). Empty
+// assistant replies (nudge path, interrupts) used to serialize with the
+// content key MISSING. Every message — including empty ones — must carry
+// an explicit content string on the wire.
+func TestDeepSeekAlwaysHasContentField(t *testing.T) {
+	var body map[string]any
+	srv := captureServer(t, &body)
+	defer srv.Close()
+	c := &openaiCompatible{name: "deepseek", apiKey: "k", base: srv.URL, model: "deepseek-v4-flash", http: srv.Client()}
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: ""}, // the poison shape
+		{Role: "user", Content: "still there?"},
+	}
+	s, err := c.Stream(context.Background(), "deepseek-v4-flash", msgs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := s.Next(); err != nil {
+			break
+		}
+	}
+	_ = s.Close()
+	raw, err := json.Marshal(body["messages"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire []map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range wire {
+		if _, ok := m["content"]; !ok {
+			t.Fatalf("message %d (%s) missing content field — DeepSeek will 422: %s", i, m["role"], raw)
+		}
+	}
+}
+
 // Vendors OTHER than deepseek must never receive the deepseek-only fields
 // (strict APIs reject unknown fields — the exact bug Gemini had).
 func TestOtherVendorsNoDeepseekFields(t *testing.T) {

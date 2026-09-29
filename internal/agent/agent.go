@@ -529,6 +529,15 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 func (a *Agent) buildMessages() []provider.Message {
 	msgs := []provider.Message{{Role: "system", Content: a.System, Cacheable: true}}
 	for _, m := range a.Sess.Messages {
+		// skip no-op assistant records: an assistant message with no text,
+		// no reasoning and no tool calls carries nothing for the model and
+		// its wire form (assistant with empty content) is what DeepSeek's
+		// strict deserializer 422s on. They entered sessions via the
+		// empty-reply nudge path and interrupted runs; dropping them at
+		// build time heals already-poisoned sessions without touching disk.
+		if m.Role == "assistant" && m.Content == "" && m.Reasoning == "" && len(m.ToolCalls) == 0 {
+			continue
+		}
 		pm := provider.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID, Reasoning: m.Reasoning}
 		for _, tc := range m.ToolCalls {
 			pm.ToolCalls = append(pm.ToolCalls, provider.ToolCall{ID: tc.ID, Name: tc.Name, Args: json.RawMessage(tc.Args)})
