@@ -24,6 +24,7 @@ func Task(parent *Agent, ctx context.Context, description string) (string, error
 		// subagent loop the first time the model repeats a call (the bug
 		// that made /task die with "internal error" before doing anything).
 		lastToolResult: map[string]tool.Result{},
+		MCP:            parent.MCP, // subagents can call MCP tools too
 	}
 	sub.Tools.AutoApprove = parent.AutoApprove
 	sub.Tools.OnSnapshot = parent.snapshot // share undo trail

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"whis/internal/mcp"
 	"whis/internal/project"
 	"whis/internal/provider"
 	"whis/internal/session"
@@ -67,6 +68,11 @@ type Agent struct {
 	// local models that answer with an empty turn (no text, no tool call) —
 	// the classic "stuck at done, never replies" failure of 1-4B models.
 	pendingNudge string
+
+	// MCP hosts external tool servers (nil-safe: zero config = plain whis).
+	// The agent routes namespaced tool calls (srv__tool) to it and appends
+	// its tools to the manifest.
+	MCP *mcp.Manager
 }
 
 // deriveTitle turns the first user prompt into a short session title
@@ -144,6 +150,30 @@ func NewUnbound(root string, auto bool) *Agent {
 	a.Tools.OnSnapshot = a.snapshot
 	a.attachMemory()
 	return a
+}
+
+// AttachMCP connects the manager (spawn servers, list tools) and appends a
+// short note to the system prompt. With no config, nothing is added to the
+// prompt and nothing spawns (zero overhead). Returns boot warnings — the
+// agent itself never fails because of MCP problems.
+func (a *Agent) AttachMCP(m *mcp.Manager) []string {
+	if m == nil {
+		return nil
+	}
+	cfg := mcp.LoadConfig()
+	if len(cfg.MCPServers) == 0 {
+		return nil // zero overhead: no config, no spawn, no prompt bloat
+	}
+	warns := m.Connect(context.Background(), cfg)
+	a.MCP = m
+	if m.Connected() {
+		a.System += "\n\n--- MCP TOOLS (external servers; namespaced srv__tool) ---\n" +
+			strings.Join(m.Stats(), ", ") +
+			"\nCall them like native tools. Their output is capped; they may touch external systems."
+	} else {
+		a.System += "\nNo MCP servers connected (config had entries but none could start)."
+	}
+	return warns
 }
 
 // Bound reports whether a model is attached.
@@ -282,6 +312,8 @@ func (a *Agent) SetMode(mode string) error {
 }
 
 // allowedTools filters the manifest for the active mode (plan = read-only).
+// MCP tools are appended namespaced; they follow the same plan-mode rule
+// (read-only unknown => denied in plan mode, like run_command).
 func (a *Agent) allowedTools() []provider.Tool {
 	readOnly := map[string]bool{
 		"locate_symbol": true, "read_range": true,
@@ -294,6 +326,23 @@ func (a *Agent) allowedTools() []provider.Tool {
 			continue
 		}
 		out = append(out, provider.Tool{Name: d.Name, Description: d.Description, Schema: d.Schema})
+	}
+	if a.MCP != nil && a.MCP.Connected() {
+		for _, ns := range a.MCP.Namespaced() {
+			raw, err := a.MCP.ManifestJSON(ns)
+			if err != nil {
+				continue
+			}
+			var schema map[string]any
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				continue
+			}
+			desc, _ := schema["description"].(string)
+			if a.Mode == ModePlan {
+				continue // MCP side effects are unknown: never allowed in plan
+			}
+			out = append(out, provider.Tool{Name: ns, Description: desc + " (MCP tool)", Schema: schema})
+		}
 	}
 	return out
 }
@@ -442,7 +491,20 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 				a.Sess.Append(session.Msg{Role: "tool", Content: "denied: plan mode is read-only", ToolCallID: c.ID})
 				continue
 			}
-			res := a.Tools.Execute(c.Name, c.Args)
+			var res tool.Result
+			if a.MCP != nil && a.MCP.IsMCP(c.Name) {
+				// external MCP tool: through the SAME approval gate as native
+				// tools (side effects are unknown => treated as sensitive),
+				// then routed to the owning server with output caps applied.
+				if !a.askApproval("run MCP tool: " + c.Name) {
+					res = tool.Result{Output: "user declined MCP tool call."}
+				} else {
+					txt, ok := a.MCP.CallTool(ctx, c.Name, c.Args)
+					res = tool.Result{OK: ok, Output: txt}
+				}
+			} else {
+				res = a.Tools.Execute(c.Name, c.Args)
+			}
 			// anti-loop: identical repeating tool calls get a deterministic
 			// cache of the previous result (free) plus a STOP instruction.
 			sig := c.Name + "|" + string(c.Args)

@@ -14,6 +14,7 @@ import (
 	"whis/internal/agent"
 	"whis/internal/config"
 	"whis/internal/lock"
+	"whis/internal/mcp"
 	"whis/internal/project"
 	"whis/internal/provider"
 	"whis/internal/selfupdate"
@@ -80,6 +81,30 @@ func main() {
 		}
 		fmt.Println("browser engine ready.")
 		return
+	case "mcp":
+		// status: connect configured servers, list their tools, exit.
+		m := mcp.NewManager()
+		defer m.Close()
+		cfgM := mcp.LoadConfig()
+		if len(cfgM.MCPServers) == 0 {
+			fmt.Println("no MCP servers configured — add them to", mcp.ConfigPath())
+			fmt.Println(`schema: {"mcpServers":{"name":{"command":"...","args":[...],"env":{}}}}`)
+			return
+		}
+		for _, w := range m.Connect(context.Background(), cfgM) {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
+		if !m.Connected() {
+			fmt.Println("no MCP servers connected.")
+			return
+		}
+		for _, s := range m.Stats() {
+			fmt.Println("connected:", s)
+		}
+		for _, ns := range m.Namespaced() {
+			fmt.Println("  tool:", ns)
+		}
+		return
 	}
 	if *initFlag {
 		md, err := project.GenerateWHISMD(root)
@@ -122,6 +147,11 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
+		mcpMgr := mcp.NewManager()
+		defer mcpMgr.Close()
+		for _, w := range a.AttachMCP(mcpMgr) {
+			fmt.Fprintln(os.Stderr, "whis: warning:", w)
+		}
 		headless(a, *promptFlag)
 		return
 	}
@@ -129,6 +159,13 @@ func main() {
 	// interactive TUI: boots instantly, model picked in-app (opencode-style).
 	// Esc interrupts the running agent loop.
 	a := agent.NewUnbound(root, *autoFlag || cfg.AutoApprove)
+	// MCP: opt-in via ~/.whis/mcp.json. Missing/empty config = zero spawns,
+	// zero latency, zero prompt bloat. Failures warn, never block boot.
+	mcpMgr := mcp.NewManager()
+	for _, w := range a.AttachMCP(mcpMgr) {
+		fmt.Fprintln(os.Stderr, "whis: warning:", w)
+	}
+	defer mcpMgr.Close() // kills child processes on any exit path
 	if *resumeFlag != "" {
 		s, err := session.Load(*resumeFlag)
 		if err != nil {
