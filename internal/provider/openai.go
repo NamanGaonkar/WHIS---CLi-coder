@@ -105,6 +105,13 @@ type oaMessage struct {
 	Content    any      `json:"content"`
 	ToolCallID string   `json:"tool_call_id,omitempty"`
 	ToolCalls  []oaCall `json:"tool_calls,omitempty"`
+	// DeepSeek thinking mode: the reasoning of the LAST assistant round
+	// must be passed back with the tool results (HTTP 400 "The
+	// reasoning_content in the thinking mode must be passed back to the
+	// API"). Omitempty: only ever set for deepseek wire models, and only
+	// on the last assistant message (their docs: strip it from all earlier
+	// rounds; other vendors reject the field outright).
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type oaCall struct {
@@ -206,6 +213,17 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 	if strings.Contains(wire, "deepseek") {
 		req.Thinking = &oaThinking{Type: "enabled"}
 		req.Effort = "low"
+		// thinking mode: the reasoning of the last assistant TOOL-CALL round
+		// must ride back with the tool results (HTTP 400 otherwise).
+		// toOAMessages maps msgs 1:1, so req.Messages[i] == msgs[i]. Only
+		// tool-call rounds carry it (final answers never need pass-back),
+		// and earlier rounds must NOT (their docs strip them).
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			if req.Messages[i].Role == "assistant" && len(req.Messages[i].ToolCalls) > 0 {
+				req.Messages[i].ReasoningContent = msgs[i].Reasoning
+				break
+			}
+		}
 	}
 
 	body, err := json.Marshal(req)

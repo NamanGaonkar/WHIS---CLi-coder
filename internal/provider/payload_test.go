@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,80 @@ func TestDeepSeekAlwaysHasContentField(t *testing.T) {
 			t.Fatalf("message %d (%s) missing content field — DeepSeek will 422: %s", i, m["role"], raw)
 		}
 	}
+}
+
+// DeepSeek thinking mode requires the LAST assistant tool-call round's
+// reasoning_content to ride back with the tool results (HTTP 400 "The
+// reasoning_content in the thinking mode must be passed back to the
+// API"). Earlier rounds must NOT carry it, other vendors must NEVER see
+// the field.
+func TestDeepSeekReasoningPassedBack(t *testing.T) {
+	var body map[string]any
+	srv := captureServer(t, &body)
+	defer srv.Close()
+	c := &openaiCompatible{name: "deepseek", apiKey: "k", base: srv.URL, model: "deepseek-v4-flash", http: srv.Client()}
+	msgs := []Message{
+		{Role: "user", Content: "go"},
+		{Role: "assistant", Reasoning: "OLD", ToolCalls: []ToolCall{{ID: "a", Name: "f", Args: json.RawMessage("{}")}}},
+		{Role: "tool", ToolCallID: "a", Content: "res"},
+		{Role: "assistant", Reasoning: "NEW", ToolCalls: []ToolCall{{ID: "b", Name: "f", Args: json.RawMessage("{}")}}},
+		{Role: "tool", ToolCallID: "b", Content: "res2"},
+	}
+	s, err := c.Stream(context.Background(), "deepseek-v4-flash", msgs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := s.Next(); err != nil {
+			break
+		}
+	}
+	_ = s.Close()
+	raw, _ := json.Marshal(body["messages"])
+	var wire []map[string]any
+	_ = json.Unmarshal(raw, &wire)
+	if wire[3]["reasoning_content"] != "NEW" {
+		t.Fatalf("last tool-call round must pass back its reasoning: %s", raw)
+	}
+	if _, leak := wire[1]["reasoning_content"]; leak {
+		t.Fatalf("earlier rounds must NOT carry reasoning_content: %s", raw)
+	}
+	if _, leak := wire[4]["reasoning_content"]; leak {
+		t.Fatalf("tool result must not carry reasoning_content: %s", raw)
+	}
+}
+
+// The reasoning_content field must never reach vendors that reject it.
+func TestOtherVendorsNoReasoningContent(t *testing.T) {
+	for _, name := range []string{"openai", "openrouter", "gemini", "groq", "mistral"} {
+		var body map[string]any
+		srv := captureServer(t, &body)
+		c := &openaiCompatible{name: name, apiKey: "k", base: srv.URL, model: "m", http: srv.Client()}
+		msgs := []Message{
+			{Role: "assistant", Reasoning: "thought hard", ToolCalls: []ToolCall{{ID: "a", Name: "f", Args: json.RawMessage("{}")}}},
+			{Role: "tool", ToolCallID: "a", Content: "res"},
+		}
+		streamOnceMsgs(t, c, msgs)
+		srv.Close()
+		raw, _ := json.Marshal(body["messages"])
+		if strings.Contains(string(raw), "reasoning_content") {
+			t.Fatalf("%s payload leaked reasoning_content: %s", name, raw)
+		}
+	}
+}
+
+func streamOnceMsgs(t *testing.T, c *openaiCompatible, msgs []Message) {
+	t.Helper()
+	s, err := c.Stream(context.Background(), "m", msgs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := s.Next(); err != nil {
+			break
+		}
+	}
+	_ = s.Close()
 }
 
 // Vendors OTHER than deepseek must never receive the deepseek-only fields
