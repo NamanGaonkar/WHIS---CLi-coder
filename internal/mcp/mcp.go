@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -64,11 +65,18 @@ func LoadConfig() Config {
 }
 
 const (
-	initTimeout  = 5 * time.Second // per-server connect+list budget (boot guardrail)
-	callTimeout  = 120 * time.Second
-	nsSep        = "__"
-	maxToolLines = 200
-	maxToolBytes = 20_000
+	// initTimeout bounds the synchronous handshake of fast servers (native
+	// binaries connect in well under a second).
+	initTimeout = 5 * time.Second
+	// bgInitTimeout is the budget for BACKGROUND connects, which absorb
+	// slow starters like `npx` (5-10s of node startup + first-run package
+	// download). WHIS boots instantly either way; the tools land when the
+	// server is up.
+	bgInitTimeout = 15 * time.Second
+	callTimeout   = 120 * time.Second
+	nsSep         = "__"
+	maxToolLines  = 200
+	maxToolBytes  = 20_000
 )
 
 // Manager owns all connected MCP servers for one WHIS process.
@@ -77,6 +85,8 @@ type Manager struct {
 	tools    map[string]*mcp.Tool          // "server__tool" -> tool def
 	order    []string                      // namespaced names, stable order
 	servers  []string                      // connected server names, stable
+
+	mu sync.Mutex // guards sessions/tools/order/servers: background connects race the agent loop
 }
 
 // NewManager builds an idle manager.
@@ -87,24 +97,79 @@ func NewManager() *Manager {
 // Connect spawns and initializes every configured server. Individual
 // failures are collected as warnings; WHIS keeps booting regardless.
 // cfg-rooted env vars inherit the parent environment (PATH etc.).
-func (m *Manager) Connect(ctx context.Context, cfg Config) (warnings []string) {
+//
+// slow (> initTimeout): connects synchronously in the background so WHIS
+// boots instantly and the tools appear when the server is up; fast servers
+// (native binaries) can be forced synchronous with force=true (used by
+// `whis mcp`, where there is nothing else to do anyway).
+func (m *Manager) Connect(ctx context.Context, cfg Config) []string {
+	var (
+		mu       sync.Mutex
+		warnings []string
+		wg       sync.WaitGroup
+	)
 	for name, sc := range cfg.MCPServers {
 		if strings.TrimSpace(sc.Command) == "" {
+			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("mcp: server %q has no command — skipped", name))
+			mu.Unlock()
 			continue
 		}
-		if err := m.connectOne(ctx, name, sc); err != nil {
+		wg.Add(1)
+		go func(name string, sc ServerConfig) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, bgInitTimeout)
+			defer cancel()
+			err := m.connectOne(cctx, name, sc)
+			if err == nil {
+				return
+			}
+			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("mcp: %q unavailable (%v) — continuing without it", name, err))
+			mu.Unlock()
+		}(name, sc)
+	}
+	wg.Wait()
+	return warnings
+}
+
+// ConnectSync is Connect with a hard 5s budget, for callers that must know
+// the outcome before continuing (`whis mcp` status). Slow servers fail
+// here with a timeout — use background Connect for real sessions.
+func (m *Manager) ConnectSync(ctx context.Context, cfg Config) []string {
+	var (
+		mu       sync.Mutex
+		warnings []string
+		wg       sync.WaitGroup
+	)
+	for name, sc := range cfg.MCPServers {
+		if strings.TrimSpace(sc.Command) == "" {
+			mu.Lock()
+			warnings = append(warnings, fmt.Sprintf("mcp: server %q has no command — skipped", name))
+			mu.Unlock()
 			continue
 		}
-		m.servers = append(m.servers, name)
+		wg.Add(1)
+		go func(name string, sc ServerConfig) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, initTimeout)
+			defer cancel()
+			err := m.connectOne(cctx, name, sc)
+			if err == nil {
+				return
+			}
+			mu.Lock()
+			warnings = append(warnings, fmt.Sprintf("mcp: %q unavailable (%v) — continuing without it", name, err))
+			mu.Unlock()
+		}(name, sc)
 	}
+	wg.Wait()
 	return warnings
 }
 
 // connectOne connects a single server and caches its tool list.
 func (m *Manager) connectOne(ctx context.Context, name string, sc ServerConfig) error {
-	cctx, cancel := context.WithTimeout(ctx, initTimeout)
+	cctx, cancel := context.WithTimeout(ctx, bgInitTimeout)
 	defer cancel()
 
 	cmd := exec.Command(sc.Command, sc.Args...) // #nosec G204 — command comes from the user's own config file
@@ -127,7 +192,9 @@ func (m *Manager) connectOne(ctx context.Context, name string, sc ServerConfig) 
 		_ = sess.Close()
 		return err
 	}
+	m.mu.Lock()
 	m.sessions[name] = sess
+	m.servers = append(m.servers, name)
 	for _, t := range res.Tools {
 		ns := name + nsSep + t.Name
 		if _, dup := m.tools[ns]; dup {
@@ -136,14 +203,21 @@ func (m *Manager) connectOne(ctx context.Context, name string, sc ServerConfig) 
 		m.tools[ns] = t
 		m.order = append(m.order, ns)
 	}
+	m.mu.Unlock()
 	return nil
 }
 
 // Connected reports whether any MCP server is live.
-func (m *Manager) Connected() bool { return len(m.sessions) > 0 }
+func (m *Manager) Connected() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sessions) > 0
+}
 
 // Stats returns "name (n tools)" summaries for boot notes.
 func (m *Manager) Stats() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	out := make([]string, 0, len(m.servers))
 	for _, s := range m.servers {
 		n := 0
@@ -159,10 +233,16 @@ func (m *Manager) Stats() []string {
 
 // Namespaced returns all MCP tool definitions (already namespaced,
 // schema-cleaned) for the tool manifest.
-func (m *Manager) Namespaced() []string { return m.order }
+func (m *Manager) Namespaced() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.order
+}
 
 // IsMCP reports whether a tool name belongs to a connected MCP server.
 func (m *Manager) IsMCP(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	_, ok := m.tools[name]
 	return ok
 }
@@ -209,7 +289,9 @@ func ToolDef(t *mcp.Tool) map[string]any {
 // ManifestJSON returns the raw MCP tool JSON for a namespaced name — used
 // by the agent layer to build provider tool definitions.
 func (m *Manager) ManifestJSON(ns string) ([]byte, error) {
+	m.mu.Lock()
 	t, ok := m.tools[ns]
+	m.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown mcp tool %s", ns)
 	}
@@ -220,7 +302,9 @@ func (m *Manager) ManifestJSON(ns string) ([]byte, error) {
 // returns (text, ok).
 func (m *Manager) CallTool(ctx context.Context, ns string, args json.RawMessage) (string, bool) {
 	server, _, found := strings.Cut(ns, nsSep)
+	m.mu.Lock()
 	sess := m.sessions[server]
+	m.mu.Unlock()
 	if !found || sess == nil {
 		return "unknown mcp tool: " + ns, false
 	}
@@ -264,10 +348,13 @@ func capOutput(s string) string {
 // Close shuts every session down; the SDK's stdio transport already runs
 // the full stdin-close -> wait -> terminate -> kill ladder per process.
 func (m *Manager) Close() {
-	for _, sess := range m.sessions {
+	m.mu.Lock()
+	sessions := m.sessions
+	m.sessions = map[string]*mcp.ClientSession{}
+	m.mu.Unlock()
+	for _, sess := range sessions {
 		_ = sess.Close()
 	}
-	m.sessions = map[string]*mcp.ClientSession{}
 }
 
 // hideWindow stops console-ette child processes from flashing a window on

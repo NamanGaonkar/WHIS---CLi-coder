@@ -91,6 +91,7 @@ func main() {
 			fmt.Println(`schema: {"mcpServers":{"name":{"command":"...","args":[...],"env":{}}}}`)
 			return
 		}
+		fmt.Println("connecting...")
 		for _, w := range m.Connect(context.Background(), cfgM) {
 			fmt.Fprintln(os.Stderr, "warning:", w)
 		}
