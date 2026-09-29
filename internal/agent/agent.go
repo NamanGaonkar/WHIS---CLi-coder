@@ -400,6 +400,7 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 		var text strings.Builder
 		var reason strings.Builder
 		var calls []provider.ToolCall
+		cutByCap := false
 
 		for {
 			d, err := stream.Next()
@@ -407,6 +408,20 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 				break
 			}
 			if err != nil {
+				// output-cap cut: the provider dropped a truncated tool call
+				// mid-generation (a whole-file write exceeded max_tokens).
+				// Keep any partial prose, then NUDGE the model to continue in
+				// smaller pieces instead of failing the run or silently
+				// looping on corrupted JSON (the token-burning stall).
+				if strings.Contains(err.Error(), "output was cut by the model's token cap") {
+					if strings.TrimSpace(text.String()) != "" {
+						a.Sess.Append(session.Msg{Role: "assistant", Content: text.String()})
+					}
+					a.pendingNudge = "[whis] your previous reply was CUT OFF by the output token cap. Continue the task in SMALLER pieces: one file or one section per reply, keep each reply short. Never emit a whole large file in a single reply."
+					emit(out, Event{Type: "notice", Text: "output cut by token cap — continuing in smaller pieces"})
+					cutByCap = true
+					break
+				}
 				emit(out, Event{Type: "error", Text: err.Error()})
 				_ = stream.Close()
 				return
@@ -438,6 +453,9 @@ func (a *Agent) loop(ctx context.Context, out chan<- Event, prompt string) {
 			}
 		}
 		_ = stream.Close()
+		if cutByCap {
+			continue // next turn continues the task in smaller pieces
+		}
 
 		// persist assistant message
 		am := session.Msg{Role: "assistant", Content: text.String(), Reasoning: reason.String()}

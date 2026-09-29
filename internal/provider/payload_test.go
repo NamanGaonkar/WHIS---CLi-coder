@@ -175,6 +175,36 @@ func streamOnceMsgs(t *testing.T, c *openaiCompatible, msgs []Message) {
 	_ = s.Close()
 }
 
+// finish_reason "length" mid-tool-call must ERROR (not emit a truncated
+// call): corrupted JSON arguments made the model retry in a silent
+// token-burning loop. The error text is matched by the agent's nudge path.
+func TestLengthCutErrorsInsteadOfTruncatedCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"apply_patch","arguments":"{\"patch\": \"*** Begin P"}}]}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+	c := &openaiCompatible{name: "deepseek", apiKey: "k", base: srv.URL, model: "deepseek-v4-flash", http: srv.Client()}
+	s, err := c.Stream(context.Background(), "deepseek-v4-flash", []Message{{Role: "user", Content: "x"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		d, err := s.Next()
+		if err != nil {
+			if strings.Contains(err.Error(), "output was cut by the model's token cap") {
+				return // correct: loud, no truncated call delivered
+			}
+			t.Fatalf("wrong error on length cut: %v", err)
+		}
+		if d.Call != nil {
+			t.Fatal("truncated tool call was delivered as if valid")
+		}
+	}
+}
+
 // Vendors OTHER than deepseek must never receive the deepseek-only fields
 // (strict APIs reject unknown fields — the exact bug Gemini had).
 func TestOtherVendorsNoDeepseekFields(t *testing.T) {

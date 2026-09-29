@@ -209,7 +209,7 @@ func (o *openaiCompatible) Stream(ctx context.Context, model string, msgs []Mess
 	// Tools-only turns (the model is just picking the next action) do not
 	// need deep thinking; final-answer turns may still think when the model
 	// supports it. Unknown extra fields are ignored by lenient servers.
-	req.MaxOutputTokens = 4096
+	req.MaxOutputTokens = 16384
 	if strings.Contains(wire, "deepseek") {
 		req.Thinking = &oaThinking{Type: "enabled"}
 		req.Effort = "low"
@@ -369,6 +369,18 @@ func (s *oaStream) Next() (Delta, error) {
 				if tc.Function.Arguments != "" {
 					p.Args = append(p.Args, tc.Function.Arguments...)
 				}
+			}
+			if c.FinishReason != nil && *c.FinishReason == "length" {
+				// output cap hit: an in-flight tool call's JSON arguments were
+				// CUT MID-STREAM (a whole-file edit exceeds the cap). Emitting
+				// that tail as a call produces garbage arguments that silently
+				// fail and make the model retry in a token-burning loop (the
+				// "stuck while tokens drain" stall). Surface the truncation
+				// loudly instead: the agent tells the model the reply was cut
+				// and to work in smaller pieces — one honest retry beats five
+				// corrupted ones.
+				_ = s.Close()
+				return Delta{}, fmt.Errorf("output was cut by the model's token cap mid-reply; the tool call was dropped")
 			}
 			if c.FinishReason != nil && len(s.pend) > 0 {
 				// flush assembled tool calls one at a time

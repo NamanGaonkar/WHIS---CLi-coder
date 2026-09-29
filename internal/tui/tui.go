@@ -113,6 +113,7 @@ type model struct {
 	// clearing the new run's state (fixes delayed/doubled replies).
 	runSeq int
 
+	pasteExpand bool // ctrl+e: expand the clipped input pane for huge pastes
 	// one queued live-usage event: syncStatus() runs after every event and
 	// would otherwise overwrite the fresh tok numbers the usage event just
 	// set (root cause of "tok 0" persisting after each turn).
@@ -229,7 +230,8 @@ func New(a AgentAPI) tea.Model {
 	ta := textarea.New()
 	ta.Placeholder = "describe a task, WHIS handles the rest...  ( / for commands )"
 	ta.Prompt = ""
-	ta.CharLimit = 16384
+	ta.CharLimit = 500000
+	ta.MaxHeight = 512
 	ta.ShowLineNumbers = false
 	ta.SetWidth(60)
 	ta.SetHeight(1)
@@ -245,10 +247,12 @@ func (m model) Init() tea.Cmd { return textarea.Blink }
 // viewport MUST be fed content here and NOT in View() — View's mutations
 // happen on a value copy that Bubble Tea discards, so any SetContent done
 // there is lost and scrolling acts on an empty viewport (the bug that made
-// wheel/arrows dead in real runs).
+// wheel/arrows dead in real runs). The input pane height is synced here too
+// (one place covers every mutation path: typing, paste, submits, clears).
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m2, cmd := m.update(msg)
 	mm := m2.(model)
+	mm.syncInputHeight()
 	mm.syncViewport()
 	return mm, cmd
 }
@@ -385,7 +389,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "ctrl+d":
 			m.quitting = true
 			return m, tea.Quit
-		}		// bracketed paste: the terminal wrapped the clipboard in ESC[200~ /
+		} // bracketed paste: the terminal wrapped the clipboard in ESC[200~ /
 		// ESC[201~ and bubbletea delivers it as ONE KeyRunes message with
 		// Paste=true (its String() deliberately reports "ctrl+v", which makes
 		// bubbles' textarea trigger an OS-clipboard read instead of using the
@@ -487,6 +491,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if msg.String() == "ctrl+y" {
 				return m.copyLast("")
+			}
+			if msg.String() == "ctrl+e" {
+				m.pasteExpand = !m.pasteExpand
+				return m, nil
 			}
 			if msg.String() == "ctrl+t" {
 				m.over.openThemes(curTheme)
@@ -1378,8 +1386,101 @@ func (m model) splashLogo(compact bool) string {
 // inpView renders the full-width input box. lipgloss Width() is the CONTENT
 // width: border (2) + padding (2) add on top, so content = width-4 makes the
 // box exactly terminal-width, equal to the menu panel and status bar.
+//
+// Large content is CLIPPED IN VIEW ONLY: the textarea keeps every byte (the
+// model always receives the full prompt — bubbles' MaxHeight would silently
+// DROP overflow lines, so it is raised, never used as the clipping tool).
+//
+// Two bounds are enforced, matching the box's real-world failure modes:
+//   - vertical: more lines than inputMaxRows → preview pane (marker + tail)
+//   - horizontal: lines longer than the box → hard-clipped to the box edge
+//     showing the TAIL (where the cursor sits); wrapping forever downward
+//     is exactly what the pane must prevent.
+//
+// ctrl+e switches to the real textarea (height-capped at 12 rows, its own
+// viewport follows the cursor) for full editing of oversized content.
 func inpView(m model) string {
-	return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(m.input.View())
+	inner := clampInt(m.width-8, 10, m.width-8) // border 2 + padding 2 + scrollbar margin
+	limit := m.inputRowLimit()
+	val := m.input.Value()
+	lines := strings.Split(val, "\n")
+	wide := false
+	for _, ln := range lines {
+		if visWidth(ln) > inner {
+			wide = true
+			break
+		}
+	}
+	if m.pasteExpand || (len(lines) <= limit && !wide) {
+		// normal: the genuine textarea (bounded by its synced height)
+		return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(m.input.View())
+	}
+	// clipped preview: marker + last rows, tail-shown, hard horizontal clip.
+	// Renders EXACTLY as many rows as the textarea it replaces (its synced
+	// height) so the frame accounting in syncViewport stays correct.
+	rows := make([]string, 0, limit)
+	if m.input.Height() <= 1 {
+		// single-row box: no marker fits — show the tail of the line itself
+		r := []rune(lines[len(lines)-1])
+		if len(r) > inner {
+			r = append([]rune("…"), r[len(r)-inner:]...)
+		}
+		return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(string(r))
+	}
+	rows = append(rows, dimStyle.Render(fmt.Sprintf("… %d lines — showing tail · ctrl+e edit · enter sends ALL", len(lines))))
+	remaining := m.input.Height() - 1
+	start := len(lines) - remaining
+	if start < 0 {
+		start = 0
+	}
+	for _, ln := range lines[start:] {
+		r := []rune(ln)
+		if len(r) > inner {
+			r = append([]rune("…"), r[len(r)-inner+1:]...)
+		}
+		rows = append(rows, string(r))
+	}
+	return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(strings.Join(rows, "\n"))
+}
+
+// inputMaxRows caps the visible input pane. Content beyond it stays in the
+// buffer (submittable in full) — only the view is clipped.
+const inputMaxRows = 10
+
+// inputRowLimit is the effective pane cap for the CURRENT screen: a huge
+// input must never push the frame past a small terminal (smoke-tested at
+// 40x12), so tiny screens get a proportionally tinier pane.
+func (m model) inputRowLimit() int {
+	base := inputMaxRows
+	if m.pasteExpand {
+		base = 12
+	}
+	screenCap := m.height - 8 // transcript + frame chrome minimums
+	if screenCap < 1 {
+		screenCap = 1
+	}
+	if base > screenCap {
+		base = screenCap
+	}
+	return base
+}
+
+// syncInputHeight keeps the textarea's visible pane at min(buffer lines,
+// row limit) rows. Called after every message, so typing, pasting and
+// submits all resize the box correctly; the textarea viewport follows the
+// cursor, so the end of the content stays visible when clipped.
+func (m *model) syncInputHeight() {
+	limit := m.inputRowLimit()
+	h := m.input.LineCount()
+	if h > limit {
+		h = limit
+	}
+	if h < 1 {
+		h = 1
+	}
+	if m.input.Height() != h {
+		m.input.SetHeight(h)
+	}
 }
 
 // sessionView is the main layout after the first prompt.

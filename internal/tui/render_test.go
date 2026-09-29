@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,10 +15,13 @@ import (
 func rcEntries() int { return len(rc.entries) }
 
 // testModel builds a minimal renderable model (mirrors New() without the
-// agent binding).
+// agent binding, including raised CharLimit/MaxHeight — the bubbles defaults
+// are 400 chars / 99 rows and would silently drop pasted content).
 func testModel() model {
 	ta := textarea.New()
 	ta.Prompt = ""
+	ta.CharLimit = 500000
+	ta.MaxHeight = 512
 	ta.SetWidth(60)
 	ta.SetHeight(1)
 	vp := viewport.New(80, 20)
@@ -129,6 +133,65 @@ func TestPasteBypassesHijacks(t *testing.T) {
 	}
 	if mm.over.mode != overlayNone {
 		t.Fatal("paste opened an overlay (slash-menu hijack fired on pasted text)")
+	}
+}
+
+// TestInputPaneClipsBigPastes: content far taller than the pane cap renders
+// inside a bounded box with a marker line, while the textarea VALUE keeps
+// every line — what whis submits must never be truncated by the VIEW
+// (bubbles' MaxHeight would silently drop lines; the pane clip must not).
+func TestInputPaneClipsBigPastes(t *testing.T) {
+	m := testModel()
+	m.width = 80
+	m.height = 30 // realistic window: full-size pane
+	for i := 0; i < 200; i++ {
+		m.input.InsertString(fmt.Sprintf("line %d of the pasted document\n", i))
+	}
+	m.input.InsertString("FINAL") // cursor content at the end
+	mm := m
+	mm.syncInputHeight() // Update() does this after every message
+	total := m.input.LineCount()
+	if total != 201 {
+		t.Fatalf("buffer lost lines: %d", total)
+	}
+	view := inpView(mm)
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "ctrl+e") || !strings.Contains(plain, "sends ALL") {
+		t.Fatalf("marker missing from clipped pane:\n%s", plain)
+	}
+	if !strings.Contains(plain, "FINAL") {
+		t.Fatal("tail (cursor content) missing from preview")
+	}
+	if rows := strings.Count(plain, "\n") + 1; rows > inputMaxRows+4 { // marker + rows + border/padding
+		t.Fatalf("pane grew unbounded: %d rows", rows)
+	}
+	// full value survives for submission
+	if got := m.input.Value(); !strings.Contains(got, "line 0 of") || !strings.Contains(got, "FINAL") {
+		t.Fatal("full pasted content not retained in the value")
+	}
+	// horizontal bound: one very long line is tail-clipped, not wrapped down
+	long := testModel()
+	long.width = 80
+	long.height = 30
+	long.input.InsertString(strings.Repeat("x", 500))
+	lm := long
+	lm.syncInputHeight()
+	lp := stripANSI(inpView(lm))
+	if rows := strings.Count(lp, "\n") + 1; rows > inputMaxRows+4 {
+		t.Fatalf("long line wrapped past the pane: %d rows", rows)
+	}
+	if !strings.Contains(lp, strings.Repeat("x", 40)) {
+		t.Fatal("long-line tail not shown in preview")
+	}
+	// small content: no marker
+	small := testModel()
+	small.width = 80
+	small.height = 30
+	small.input.InsertString("just a short prompt")
+	sm := small
+	sm.syncInputHeight()
+	if v := inpView(sm); strings.Contains(stripANSI(v), "sends ALL") {
+		t.Fatal("marker shown for small content")
 	}
 }
 
