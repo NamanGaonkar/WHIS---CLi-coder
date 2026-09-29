@@ -127,7 +127,7 @@ type model struct {
 	// line-range selection, motion extends it, release copies to the
 	// clipboard with a status-bar toast. vpLines caches the exact viewport
 	// content lines the selection indexes into.
-	selAnchor int
+	selAnchor int // drag-select anchor row (-1 = inactive; 0 is a VALID row)
 	selCur    int
 	vpLines   []string
 	toast     string
@@ -257,7 +257,7 @@ func New(a AgentAPI) tea.Model {
 	ta.Focus()
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
-	return model{agent: a, input: ta, vp: vp, planOpen: true, splash: true}
+	return model{agent: a, input: ta, vp: vp, planOpen: true, splash: true, selAnchor: -1, selCur: -1}
 }
 
 // Init enables bracketed paste HERE (inside the running program, after
@@ -676,6 +676,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if inChat {
 				m.selAnchor = msg.Y - m.vpTop
 				m.selCur = m.selAnchor
+			} else {
+				// press outside the viewport (input box, status bar): cancel
+				// any stale selection instead of leaving phantom state
+				m.selAnchor, m.selCur = -1, -1
 			}
 		case msg.Action == tea.MouseActionMotion && (m.selAnchor >= 0 || m.selCur >= 0):
 			if m.vp.Height > 0 {
@@ -686,6 +690,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			lo, hi := m.selAnchor, m.selCur
 			if lo < 0 {
 				lo, hi = hi, lo
+			}
+			// rows are viewport-space (0-based); clamp the drag end to what
+			// is actually on screen so overdrags copy the visible tail
+			if hi >= len(m.vpLines) {
+				hi = len(m.vpLines) - 1
+			}
+			if lo >= len(m.vpLines) {
+				lo = len(m.vpLines) - 1
 			}
 			if m.vp.Height > 0 && lo >= 0 && hi >= lo && hi < len(m.vpLines) {
 				var sb strings.Builder
@@ -1559,8 +1571,34 @@ func inpView(m model) string {
 	// normal path whenever the WRAPPED visual rows fit the pane: the genuine
 	// textarea (height synced, text visibly wrapping row by row). The tail
 	// preview only takes over once wrapping alone would exceed the cap.
+	// When the buffer holds MORE rows than the pane shows, a scrollbar
+	// rides the right edge of the editor (position from the textarea's
+	// internal viewport offset) so overflow is visible and scrollable.
 	if m.pasteExpand || wrappedRows(m) <= limit {
-		return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(m.input.View())
+		view := m.input.View()
+		total := wrappedRows(m)
+		if total > m.input.Height() {
+			lines := strings.Split(view, "\n")
+			track := len(lines)
+			thumb := maxInt(1, track*m.input.Height()/total)
+			maxOff := maxInt(1, total-m.input.Height())
+			// the textarea viewport's YOffset tracks the cursor row
+			off := clampInt(m.input.LineInfo().RowOffset*(track-thumb)/maxOff, 0, track-thumb)
+			for i := range lines {
+				if w := visWidth(lines[i]); w > m.input.Width() {
+					lines[i] = clipANSI(lines[i], m.input.Width())
+				} else if w < m.input.Width() {
+					lines[i] += strings.Repeat(" ", m.input.Width()-w)
+				}
+				if i >= off && i < off+thumb {
+					lines[i] += scrollThumbStyle.Render("▐")
+				} else {
+					lines[i] += scrollTrackStyle.Render("│")
+				}
+			}
+			view = strings.Join(lines, "\n")
+		}
+		return inputStyle.Width(clampInt(m.width-4, 16, m.width)).Render(view)
 	}
 	// clipped preview: marker + last rows, tail-shown, hard horizontal clip.
 	// Renders EXACTLY as many rows as the textarea it replaces (its synced

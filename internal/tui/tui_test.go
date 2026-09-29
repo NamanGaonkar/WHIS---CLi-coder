@@ -180,14 +180,19 @@ func TestInputBoxFullyBlack(t *testing.T) {
 	m = m2.(model)
 	v := inpView(m)
 	// border and padding rows must carry the black background, not just the
-	// content line: count black-painted cells across all box rows.
-	if !strings.Contains(v, "\x1b[48;5;16m") && !strings.Contains(v, "\x1b[40m") {
-		t.Fatalf("input box border/padding rows lost the black backing:\n%q", v)
+	// content line: count dark-painted cells across all box rows. The
+	// backing is the deep theme tone #0D0805 (ANSI256 232), not pure #000
+	// which showed as a visibly darker rectangle against the terminal.
+	dark := func(s string) bool {
+		return strings.Contains(s, "\x1b[48;5;16m") || strings.Contains(s, "\x1b[40m") || strings.Contains(s, "\x1b[48;5;232m")
 	}
-	// the status band is its own black strip, separate from the box
+	if !dark(v) {
+		t.Fatalf("input box border/padding rows lost the dark backing:\n%q", v)
+	}
+	// the status band is its own dark strip, separate from the box
 	sb := m.statusBar()
-	if !strings.Contains(sb, "\x1b[48;5;16m") && !strings.Contains(sb, "\x1b[40m") {
-		t.Fatalf("status bar lost its black backing: %q", sb)
+	if !dark(sb) {
+		t.Fatalf("status bar lost its dark backing: %q", sb)
 	}
 }
 

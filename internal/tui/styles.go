@@ -88,7 +88,9 @@ func applyTheme(i int) {
 	dimGray = lipgloss.Color(t.dim)
 	deep = lipgloss.Color(t.deep)
 	paleRow = lipgloss.Color(t.paleRow)
-	black = lipgloss.Color("#000000")
+	black = lipgloss.Color("#0D0805") // deep theme tone instead of pure #000: pure black backing
+	// shows as a visibly darker rectangle against terminal-background themes
+	// (the "black padding" artifact in the input box)
 
 	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0D0805")).Background(ember).Padding(0, 1)
 	badgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#0D0805")).Background(amber).Padding(0, 1).Bold(true)
