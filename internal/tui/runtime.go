@@ -219,7 +219,6 @@ func (ad *Adapter) HandleSlash(cmd string) (string, error) {
   /help           this help
 keys:
   /       command menu (arrow keys or mouse click to pick)
-  ?       theme picker
   Ctrl+T  theme picker        Ctrl+P  plan pane toggle
   Ctrl+O  expand code blocks  Ctrl+Y  copy last reply to clipboard
   Ctrl+C/D quit

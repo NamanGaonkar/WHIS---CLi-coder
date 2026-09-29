@@ -419,16 +419,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOverlay(msg)
 		}
 
-		// menu cycling when the box is empty (opencode parity): / = commands,
-		// ? = themes
+		// menu cycling when the box is empty (opencode parity): / = commands.
+		// "?" is deliberately NOT a hijack key: it shares the physical key
+		// with "/" (Shift+/) and users must be able to TYPE a question mark
+		// as the first character of a prompt. Themes remain on ctrl+t and
+		// /themes.
 		if strings.TrimSpace(m.input.Value()) == "" {
-			switch msg.String() {
-			case "/":
+			if msg.String() == "/" {
 				m.input.SetValue("")
 				m.over.openSlashMenu()
-				return m, nil
-			case "?":
-				m.over.openThemes(curTheme)
 				return m, nil
 			}
 		}
@@ -440,11 +439,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.over.openSlashMenu()
 				return m, nil
 			}
-			// "?" opens the theme picker on splash too
-			if msg.String() == "?" {
-				m.over.openThemes(curTheme)
-				return m, nil
-			}
+			// "?" types normally on splash too (same Shift+/ physical key as
+			// "/"); themes stay on ctrl+t and /themes
 			// any typing lands in the input; enter dismisses and submits
 			if msg.String() == "enter" {
 				return m, m.submitPrompt(true)

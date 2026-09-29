@@ -199,10 +199,11 @@ func TestThemesSwitch(t *testing.T) {
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = m2.(model)
 	m.splash = false
-	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m.input.SetValue("/themes")
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := m2.(model)
 	if mm.over.mode != overlayThemes {
-		t.Fatalf("? should open the theme menu, got mode %v", mm.over.mode)
+		t.Fatalf("/themes should open the theme menu, got mode %v", mm.over.mode)
 	}
 	// select the last theme and apply
 	mm.over.cursor = len(mm.over.items) - 1
