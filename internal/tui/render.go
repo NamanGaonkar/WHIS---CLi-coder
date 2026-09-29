@@ -114,11 +114,16 @@ func renderOneLine(m model, l line, vw int) string {
 		if isMCPToolLine(l.body) {
 			// external MCP call: amber diamond marker so external side
 			// effects are visually distinct from native tools
-			return warnStyle.Render("◆ " + l.body)
+			return wrapANSI(warnStyle.Render("◆ "+l.body), vw)
 		}
-		return toolStyle.Render("> " + l.body)
+		return wrapANSI(toolStyle.Render("> "+l.body), vw)
 	case "toolout":
-		return diffStyle(l.body)
+		// web_search digests, command output: these are the long grey
+		// blocks. They used to be HARD-CLIPPED mid-line, which chopped URLs
+		// and search snippets into broken ragged fragments with uneven
+		// spacing. ANSI-aware WRAPPING keeps every byte on screen, color
+		// running continuously down the wrapped rows.
+		return wrapANSI(diffStyle(l.body), vw)
 	case "done":
 		// elapsed is frozen into the line at creation (stamp): render-time
 		// reads would drift across runs and poison the memo cache
@@ -128,9 +133,9 @@ func renderOneLine(m model, l line, vw int) string {
 		}
 		return doneStyle.Render(" DONE ") + doneTextStyle.Render(" "+l.body+" ") + dimStyle.Render(" "+elapsed)
 	case "info":
-		return dimStyle.Render("· " + l.body)
+		return wrapANSI(dimStyle.Render("· "+l.body), vw)
 	case "error":
-		return errStyle.Render("x " + l.body)
+		return wrapANSI(errStyle.Render("x "+l.body), vw)
 	}
 	return ""
 }
@@ -187,8 +192,10 @@ func (m model) renderTranscriptCached(vw int) string {
 	if len(blocks) == 0 {
 		return ""
 	}
-	// assemble: ANSI-aware hard clip per row (memoized), utility blocks
-	// joined tight inside, one blank line between blocks.
+	// assemble: ANSI-aware wrap per row (memoized), utility blocks joined
+	// tight inside, one blank line between blocks. Lines are pre-wrapped by
+	// their renderer (wrapANSI) so this pass is a no-op safety net that
+	// preserves color across continuation rows instead of chopping them.
 	var out []string
 	for _, b := range blocks {
 		clipped := make([]string, 0, len(b.rows))
@@ -204,9 +211,11 @@ func (m model) renderTranscriptCached(vw int) string {
 	return strings.Join(out, "\n\n")
 }
 
-// clipPartCached memoizes the width-clipping of an already-rendered part.
+// clipPartCached memoizes the width-fitting of an already-rendered part.
 // Keyed by the full rendered string — hashing is far cheaper than the
-// per-line ANSI-aware clip + visWidth measurement.
+// per-line ANSI-aware wrap + visWidth measurement. Wraps (never clips):
+// chopping grey tool/web output mid-line is what broke the transcript
+// before; every byte must stay visible.
 var clipCache = map[clipKey]string{}
 
 type clipKey struct {
@@ -220,11 +229,7 @@ func clipPartCached(p string, vw int) string {
 	if v, ok := clipCache[k]; ok {
 		return v
 	}
-	var bl []string
-	for _, ln := range strings.Split(p, "\n") {
-		bl = append(bl, clipANSI(ln, vw))
-	}
-	out := strings.Join(bl, "\n")
+	out := wrapANSI(p, vw)
 	if len(clipCache) >= renderMaxLines*2 {
 		clipCache = map[clipKey]string{}
 	}

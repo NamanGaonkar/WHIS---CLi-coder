@@ -2000,6 +2000,71 @@ func (m model) renderTranscript(vw int) string {
 	return strings.Join(clipped, "\n\n")
 }
 
+// wrapANSI wraps a styled line at display width w, re-emitting the active
+// SGR on each continuation row so grey tool/web output stays colored and
+// readable instead of being hard-clipped into broken fragments.
+func wrapANSI(s string, w int) string {
+	if w < 1 {
+		return s
+	}
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if visWidth(line) <= w {
+			out = append(out, line)
+			continue
+		}
+		var cur strings.Builder
+		curSGR := ""
+		used := 0
+		inEsc := false
+		var esc strings.Builder
+		for _, r := range line {
+			if inEsc {
+				esc.WriteRune(r)
+				if r == '[' {
+				} else if r >= 0x40 && r <= 0x7e {
+					inEsc = false
+					seq := esc.String()
+					cur.WriteString(seq)
+					if strings.HasSuffix(seq, "m") {
+						if seq == "[0m" || seq == "[m" {
+							curSGR = ""
+						} else {
+							curSGR += seq
+						}
+					}
+					esc.Reset()
+				}
+				continue
+			}
+			if r == 0x1b {
+				inEsc = true
+				esc.Reset()
+				esc.WriteRune(r)
+				continue
+			}
+			rw := lipgloss.Width(string(r))
+			if used+rw > w {
+				out = append(out, cur.String()+"[0m")
+				cur.Reset()
+				cur.WriteString(curSGR)
+				used = 0
+				if rw == 0 {
+					continue
+				}
+			}
+			cur.WriteRune(r)
+			used += rw
+		}
+		row := cur.String()
+		if curSGR != "" {
+			row += "[0m"
+		}
+		out = append(out, row)
+	}
+	return strings.Join(out, "\n")
+}
+
 // isMCPToolLine reports whether a transcript tool line names an MCP tool:
 // tool lines start with the tool name; namespaced names (srv__tool) only
 // ever come from MCP routing.
