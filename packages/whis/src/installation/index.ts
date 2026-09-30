@@ -144,12 +144,35 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
 
     const upgradeCurl = Effect.fnUntraced(
       function* (target: string) {
-        // WHIS: self-update via the GitHub release install script (user's fork).
-        const response = yield* httpOk.execute(
-          HttpClientRequest.get("https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.sh"),
-        )
+        // WHIS: self-update via the GitHub release install script.
+        // Windows pipes install.ps1 into PowerShell; everything else uses
+        // install.sh through sh. (Piping the bash script into cmd was the
+        // source of the "garbage text" upgrade failures.)
+        const isWindows = process.platform === "win32"
+        const scriptUrl = isWindows
+          ? "https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.ps1"
+          : "https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.sh"
+        const response = yield* httpOk.execute(HttpClientRequest.get(scriptUrl))
         const body = yield* response.text
         const bodyBytes = new TextEncoder().encode(body)
+        if (isWindows) {
+          const result = yield* appProcess.run(
+            ChildProcess.make(
+              "powershell",
+              ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+              {
+                stdin: Stream.make(bodyBytes),
+                env: { VERSION: target },
+                extendEnv: true,
+              },
+            ),
+          )
+          return {
+            code: result.exitCode,
+            stdout: result.stdout.toString("utf8"),
+            stderr: result.stderr.toString("utf8"),
+          }
+        }
         const shell = yield* upgradeScriptShell()
         const result = yield* appProcess.run(
           ChildProcess.make(shell, [], {
