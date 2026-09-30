@@ -11,6 +11,7 @@ import { InstallationChannel, InstallationVersion } from "./installation/version
 import { EventV2 } from "./event"
 import { makeGlobalNode } from "./effect/app-node"
 import { httpClient } from "./effect/app-node-platform"
+import { patchWhisCatalog } from "./whis-catalog"
 
 export const CatalogModelStatus = Schema.Literals(["alpha", "beta", "deprecated"])
 export type CatalogModelStatus = typeof CatalogModelStatus.Type
@@ -202,7 +203,11 @@ const layer = Layer.effect(
     )
 
     const fetchAndWrite = Effect.fn("ModelsDev.fetchAndWrite")(function* () {
-      const text = yield* fetchApi()
+      const raw = yield* fetchApi()
+      // WHIS: persist the PATCHED catalog so the cache file itself never
+      // carries hosted gateways, and keeps the `ollama` entry models.dev
+      // upstream lacks. patchWhisCatalog is idempotent.
+      const text = JSON.stringify(patchWhisCatalog(JSON.parse(raw)))
       const tempfile = `${filepath}.${process.pid}.${Date.now()}.tmp`
       yield* fs.writeWithDirs(tempfile, text).pipe(
         Effect.andThen(fs.rename(tempfile, filepath)),
@@ -217,10 +222,13 @@ const layer = Layer.effect(
     })
 
     const populate = Effect.gen(function* () {
+      // WHIS: every source (stale disk cache from an old WHIS, embedded
+      // snapshot, fresh fetch) passes through the same strict-BYOK patch —
+      // guarantees `ollama` exists and hosted gateways never ship.
       const fromDisk = yield* loadFromDisk
-      if (fromDisk) return fromDisk
+      if (fromDisk) return patchWhisCatalog(fromDisk)
       const snapshot = yield* loadSnapshot
-      if (snapshot) return snapshot
+      if (snapshot) return patchWhisCatalog(snapshot)
       if (Flag.OPENCODE_DISABLE_MODELS_FETCH) return {}
       // Flock is cross-process: concurrent opencode CLIs can race on this cache file.
       const text = yield* Effect.scoped(
@@ -229,7 +237,7 @@ const layer = Layer.effect(
           return yield* fetchAndWrite()
         }),
       )
-      return JSON.parse(text) as Record<string, Provider>
+      return patchWhisCatalog(JSON.parse(text) as Record<string, Provider>)
     }).pipe(Effect.withSpan("ModelsDev.populate"), Effect.orDie)
 
     const [cachedGet, invalidate] = yield* Effect.cachedInvalidateWithTTL(populate, Duration.infinity)
