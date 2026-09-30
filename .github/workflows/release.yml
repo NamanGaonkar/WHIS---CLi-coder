@@ -80,8 +80,11 @@ jobs:
           else
             cp "${DIR}/bin/whis" "whis-${GOOS}-${GOARCH}"            # legacy Go name
             cp "${DIR}/bin/whis" "whis-${OSARCH}"                    # installer name
-            rm -rf "$DIR"
           fi
+          # Remove the build dir in ALL cases: the artifact upload would carry
+          # it along and the release upload step would die with
+          # "read whis-<target>: is a directory".
+          rm -rf "$DIR"
           ls -la
 
       - name: Upload artifacts
@@ -127,9 +130,12 @@ jobs:
           # uploads endpoint needs a few seconds before it will accept assets
           sleep 8
           cd dist
+          # Files only - never directories (a stray dir makes gh fail with
+          # "is a directory" and abort the whole upload).
+          mapfile -t files < <(find . -maxdepth 1 -type f -printf "%f\n" | sort)
           ok=""
           for i in 1 2 3 4 5; do
-            if gh release upload "${{ github.ref_name }}" * --clobber; then ok="yes"; break; fi
+            if gh release upload "${{ github.ref_name }}" "${files[@]}" --clobber; then ok="yes"; break; fi
             echo "upload attempt $i failed; retrying in 15s..."
             sleep 15
           done
