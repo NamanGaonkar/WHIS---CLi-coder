@@ -67,10 +67,11 @@ export function Logo() {
           )
         }}
       </For>
-      <box flexDirection="row" justifyContent="center" marginTop={1}>
-        <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-          T O K E N   S U R G I C A L   A I   C O D E R
-        </text>
+      {/* Tagline: centered under the banner. Banner rows are 19 + gap(1) +
+          12 = 32 cols; "TOKEN SURGICAL AI CODER" is 23 cols → 4 spaces of
+          left padding centers it (plus 1 for the box's outer alignment). */}
+      <box flexDirection="row">
+        <text fg={theme.primary} attributes={TextAttributes.BOLD}>{"    TOKEN SURGICAL AI CODER"}</text>
       </box>
     </box>
   )

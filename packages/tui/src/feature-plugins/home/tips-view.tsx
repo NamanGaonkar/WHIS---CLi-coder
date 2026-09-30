@@ -216,7 +216,6 @@ const TIPS: Tip[] = [
   "Set any keybind to {highlight}none{/highlight} to disable it completely",
   "Configure local or remote MCP servers in the {highlight}mcp{/highlight} config section",
   "Add {highlight}.md{/highlight} files to {highlight}.whis/commands/{/highlight} for reusable prompts",
-  "Use {highlight}$ARGUMENTS{/highlight}, {highlight}$1{/highlight}, {highlight}$2{/highlight} in custom commands for dynamic input",
   "Use backticks to inject shell output (e.g., {highlight}`git status`{/highlight})",
   "Add {highlight}.md{/highlight} files to {highlight}.whis/agents/{/highlight} for specialized AI personas",
   "Configure per-agent permissions for {highlight}edit{/highlight}, {highlight}bash{/highlight}, and {highlight}webfetch{/highlight} tools",
