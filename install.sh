@@ -1,76 +1,67 @@
 #!/bin/sh
-# whis installer (macOS / Linux) — https://github.com/NamanGaonkar/WHIS---CLi-coder
-# usage: curl -fsSL https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.sh | sh
+# WHIS installer - https://github.com/NamanGaonkar/WHIS---CLi-coder
+# Run with: curl -fsSL https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.sh | sh
 set -e
 
 REPO="NamanGaonkar/WHIS---CLi-coder"
+DEST="${WHIS_INSTALL_DIR:-$HOME/.whis/bin}"
 
-# --- fetch helper: curl or wget, both fine ---
-fetch() {
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$1" -o "$2"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$2" "$1"
-    else
-        echo "error: need curl or wget to download" >&2
-        exit 1
-    fi
-}
+echo ""
+echo "  ██╗    ██╗ ██╗  ██╗ ██╗ ███████╗"
+echo "  ██║    ██║ ██║  ██║ ██║ ██╔════╝"
+echo "  ██║ █╗ ██║ ███████║ ██║ ███████╗"
+echo "  ██║███╗██║ ██╔══██║ ██║ ╚════██║"
+echo "  ╚███╔███╔╝ ██║  ██║ ██║ ███████║"
+echo "   ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝"
+echo "  Installing WHIS [Personal Edition]..."
+echo ""
 
-# --- platform detection (must match release asset names) ---
-OS=$(uname -s)
-ARCH=$(uname -m)
-case "$OS" in
-    Darwin) os="darwin" ;;
-    Linux)  os="linux" ;;
-    *) echo "error: unsupported OS '$OS' (windows: use the install.ps1 one-liner)" >&2; exit 1 ;;
-esac
+# Detect platform
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
 case "$ARCH" in
-    x86_64|amd64)  arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *) echo "error: unsupported architecture '$ARCH'" >&2; exit 1 ;;
+  x86_64|amd64) ARCH="x64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+case "$OS" in
+  linux) PLATFORM="linux" ;;
+  darwin) PLATFORM="darwin" ;;
+  *) echo "Unsupported OS: $OS (use install.ps1 on Windows)"; exit 1 ;;
 esac
 
-ASSET="whis-${os}-${arch}"
-BASE="https://github.com/${REPO}/releases/latest/download"
-TMP=$(mktemp -d)
+TARGET="whis-${PLATFORM}-${ARCH}"
+
+# Resolve latest release version
+if [ "${VERSION:-latest}" = "latest" ]; then
+  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+  if [ -z "$VERSION" ]; then echo "Failed to resolve latest release"; exit 1; fi
+fi
+echo "  Version: ${VERSION}"
+
+URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARGET}.tar.gz"
+TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "==> downloading whis (${os}/${arch}, latest release)..."
-fetch "${BASE}/${ASSET}" "${TMP}/whis"
-fetch "${BASE}/${ASSET}.sha256" "${TMP}/whis.sha256"
+echo "  Downloading ${TARGET}..."
+curl -fsSL "$URL" -o "$TMP/whis.tar.gz"
 
-# --- verify checksum (format: "<hash>  <filename>", tolerant of CRLF) ---
-expected=$(tr -d '\r' < "${TMP}/whis.sha256" | cut -d' ' -f1)
-if command -v sha256sum >/dev/null 2>&1; then
-    actual=$(sha256sum "${TMP}/whis" | cut -d' ' -f1)
-elif command -v shasum >/dev/null 2>&1; then
-    actual=$(shasum -a 256 "${TMP}/whis" | cut -d' ' -f1)
-else
-    echo "warning: no sha256 tool found, skipping checksum verification" >&2
-    actual="$expected"
+# Verify checksum if available
+if curl -fsSL "${URL}.sha256" -o "$TMP/whis.tar.gz.sha256" 2>/dev/null; then
+  (cd "$TMP" && echo "  $(cat whis.tar.gz.sha256)  whis.tar.gz" | shasum -a 256 -c - >/dev/null 2>&1) \
+    && echo "  Checksum OK" || { echo "  Checksum MISMATCH"; exit 1; }
 fi
-if [ "$actual" != "$expected" ]; then
-    echo "error: checksum mismatch (want $expected, got $actual) — download corrupted, aborting" >&2
-    exit 1
-fi
-echo "==> checksum ok"
 
-# --- install (user-local bin dir, no sudo needed) ---
-DEST="${WHIS_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$DEST"
-mv "${TMP}/whis" "${DEST}/whis"
-chmod +x "${DEST}/whis"
+tar -xzf "$TMP/whis.tar.gz" -C "$TMP"
+find "$TMP" -name whis -type f -exec mv {} "$DEST/whis" \;
+chmod +x "$DEST/whis"
 
+echo ""
+echo "  Installed to $DEST/whis"
 case ":$PATH:" in
-    *":$DEST:"*) ;;
-    *)
-        echo ""
-        echo "NOTE: $DEST is not on your PATH."
-        echo "add this to your ~/.zshrc or ~/.bashrc:"
-        echo "    export PATH=\"\$PATH:$DEST\""
-        ;;
+  *":$DEST:"*) ;;
+  *) echo "  Add it to your PATH:  export PATH=\"$DEST:\$PATH\"" ;;
 esac
-
-echo "==> installed: ${DEST}/whis ($( "${DEST}/whis" -version 2>/dev/null || echo 'run it to start coding' ))"
-echo "==> start: cd into a project and run: whis"
+echo "  Run:  whis"
+echo ""

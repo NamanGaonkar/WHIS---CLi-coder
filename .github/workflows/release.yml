@@ -3,33 +3,94 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: macos-latest, target: darwin-arm64 }
+          - { os: macos-13, target: darwin-x64 }
+          - { os: windows-latest, target: windows-x64 }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+
+      - uses: oven-sh/setup-bun@v2
         with:
-          go-version: "1.23"
+          bun-version: latest
 
-      - name: Build all platforms
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck
+        run: bun run check
+        continue-on-error: true
+
+      - name: Build
+        shell: bash
+        env:
+          OPENCODE_VERSION: ${{ github.ref_name }}
         run: |
-          mkdir -p dist
-          for platform in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            os=${platform%/*}; arch=${platform#*/}
-            ext=""; [ "$os" = "windows" ] && ext=".exe"
-            GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
-              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o "dist/whis-${os}-${arch}${ext}" ./cmd/whis
-          done
-          cd dist && for f in whis-*; do sha256sum "$f" > "$f.sha256"; done
+          VERSION="${OPENCODE_VERSION#v}"
+          cd packages/whis
+          OPENCODE_VERSION="$VERSION" bun run script/build.ts --single --skip-embed-web-ui
 
-      - name: Publish GitHub Release
+      - name: Package artifacts
+        shell: bash
+        run: |
+          cd packages/whis/dist
+          for dir in */; do
+            name="${dir%/}"
+            if [ -d "$name/bin" ]; then
+              if [ "${{ matrix.os }}" = "windows-latest" ]; then
+                (cd "$name" && 7z a "../../whis-${name#whis-}.zip" bin/*)
+              else
+                (cd "$name" && tar -czf "../../whis-${name#whis-}.tar.gz" bin)
+              fi
+            fi
+          done
+          cd ..
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: whis-${{ matrix.target }}
+          path: |
+            packages/whis/dist/*.zip
+            packages/whis/dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          for f in *.zip *.tar.gz; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          title: "whis ${{ github.ref_name }} - made by Naman Gaonkar"
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
           generate_release_notes: true

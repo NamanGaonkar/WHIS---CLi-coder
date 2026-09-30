@@ -1,71 +1,70 @@
-# whis installer (Windows) - https://github.com/NamanGaonkar/WHIS---CLi-coder
-# usage: iwr https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.ps1 | iex
+# WHIS installer - https://github.com/NamanGaonkar/WHIS---CLi-coder
+# Run with: irm https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.ps1 | iex
+
 $ErrorActionPreference = "Stop"
-$repo = "NamanGaonkar/WHIS---CLi-coder"
+$Repo = "NamanGaonkar/WHIS---CLi-coder"
 
-# TLS 1.2 for older Windows PowerShell (5.1) - additive, keeps newer protocols
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$banner = @"
+  ██╗    ██╗ ██╗  ██╗ ██╗ ███████╗
+  ██║    ██║ ██║  ██║ ██║ ██╔════╝
+  ██║ █╗ ██║ ███████║ ██║ ███████╗
+  ██║███╗██║ ██╔══██║ ██║ ╚════██║
+  ╚███╔███╔╝ ██║  ██║ ██║ ███████║
+   ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝
+"@
+Write-Host $banner -ForegroundColor DarkYellow
+Write-Host "  Installing WHIS [Personal Edition]..." -ForegroundColor Yellow
+Write-Host ""
 
-# --- platform detection (must match release asset names) ---
-$arch = $env:PROCESSOR_ARCHITECTURE
-switch -Wildcard ($arch) {
-    "AMD64" { $a = "amd64" }
-    "ARM64" { $a = "arm64" }
-    default { Write-Error "unsupported architecture '$arch'"; exit 1 }
+$Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+$Target = "whis-windows-$Arch"
+$Dest = "$env:USERPROFILE\.whis\bin"
+
+# Resolve latest release version
+$Version = "latest"
+if ($env:VERSION) { $Version = $env:VERSION }
+else {
+  try {
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
+    $Version = $rel.tag_name
+  } catch {
+    Write-Host "  Failed to resolve latest release: $_" -ForegroundColor Red
+    exit 1
+  }
 }
-$asset = "whis-windows-$a.exe"
-$base = "https://github.com/$repo/releases/latest/download"
-$tmp = Join-Path $env:TEMP ("whis-install-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
-New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+Write-Host "  Version: $Version"
 
-Write-Host "==> downloading whis (windows/$a, latest release)..."
+$Url = "https://github.com/$Repo/releases/download/$Version/$Target.zip"
+$Tmp = Join-Path $env:TEMP ("whis-install-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+New-Item -ItemType Directory -Path $Tmp -Force | Out-Null
+
+Write-Host "  Downloading $Target..."
+$Zip = Join-Path $Tmp "whis.zip"
+Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing
+
+# Verify checksum if available
 try {
-    Invoke-WebRequest -Uri "$base/$asset" -OutFile "$tmp\whis.exe" -UseBasicParsing
-    Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile "$tmp\whis.exe.sha256" -UseBasicParsing
-} catch {
-    Write-Error "download failed: $_"
-    exit 1
-}
+  Invoke-WebRequest -Uri "$Url.sha256" -OutFile "$Zip.sha256" -UseBasicParsing
+  $expected = (Get-Content "$Zip.sha256" | Out-String).Trim().Split(" ")[0]
+  $actual = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
+  if ($expected -ne $actual) { Write-Host "  Checksum MISMATCH" -ForegroundColor Red; exit 1 }
+  Write-Host "  Checksum OK" -ForegroundColor Green
+} catch { Write-Host "  (no checksum published, skipping verification)" -ForegroundColor DarkGray }
 
-# --- verify checksum (tolerant of "hash  filename" format and CRLF) ---
-$expected = (Get-Content "$tmp\whis.exe.sha256" -Raw).Trim() -split '\s+' | Select-Object -First 1
-$actual = (Get-FileHash "$tmp\whis.exe" -Algorithm SHA256).Hash.ToLower()
-if ($actual -ne $expected.ToLower()) {
-    Write-Error "checksum mismatch (want $expected, got $actual) - download corrupted, aborting"
-    exit 1
-}
-Write-Host "==> checksum ok"
+New-Item -ItemType Directory -Path $Dest -Force | Out-Null
+Expand-Archive -Path $Zip -DestinationPath $Tmp -Force
+$exe = Get-ChildItem -Path $Tmp -Recurse -Filter "whis.exe" | Select-Object -First 1
+Copy-Item $exe.FullName (Join-Path $Dest "whis.exe") -Force
 
-# --- install: prefer a dir already on PATH, else the Go bin dir, else create one ---
-$destDir = $null
-foreach ($d in @("$env:USERPROFILE\go\bin", "$env:LOCALAPPDATA\Programs\whis")) {
-    if (Test-Path $d) { $destDir = $d; break }
-    if ($null -eq $destDir) { $destDir = $d }  # remember first candidate
-}
-if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-$dest = Join-Path $destDir "whis.exe"
+Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
-# fail politely if whis is currently running (file lock)
-if (Test-Path $dest) {
-    try {
-        $p = Get-Process whis -ErrorAction SilentlyContinue
-        if ($p) { Write-Error "whis is currently running - close it and retry the install"; exit 1 }
-    } catch { }
-}
-
-Move-Item -Force -Path "$tmp\whis.exe" -Destination $dest
-Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-
-# PATH check
+Write-Host ""
+Write-Host "  Installed to $Dest\whis.exe" -ForegroundColor Green
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-$onPath = ($userPath -split ';') -contains $destDir -or ($machinePath -split ';') -contains $destDir
-if (-not $onPath) {
-    [Environment]::SetEnvironmentVariable("Path", "$userPath;$destDir", "User")
-    Write-Host "==> added $destDir to your user PATH (new terminals only)"
-    Write-Host "    for THIS window run: `$env:Path = `"$destDir;`$env:Path`""
+if ($userPath -notlike "*$Dest*") {
+  [Environment]::SetEnvironmentVariable("Path", "$userPath;$Dest", "User")
+  Write-Host "  Added $Dest to your PATH (reopen your terminal to use it)"
 }
-
-$ver = & $dest -version 2>$null
-Write-Host "==> installed: $dest $ver"
-Write-Host "==> start: cd into a project and run: whis"
+Write-Host ""
+Write-Host "  Run:  whis" -ForegroundColor Yellow
+Write-Host ""
