@@ -131,6 +131,7 @@ function makeMcp(instructions: MCP.ServerInstructions[] = []) {
       removeAuth: () => Effect.void,
       supportsOAuth: () => Effect.succeed(false),
       hasStoredTokens: () => Effect.succeed(false),
+      callTool: () => Effect.die("unexpected MCP callTool") as any,
       getAuthStatus: () => Effect.succeed("not_authenticated" as const),
     }),
   )

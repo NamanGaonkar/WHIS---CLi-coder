@@ -24,6 +24,19 @@ export const AuthCallbackPayload = Schema.Struct({
 export const AuthRemoveResponse = Schema.Struct({
   success: Schema.Literal(true),
 })
+export const ToolCallPayload = Schema.Struct({
+  tool: Schema.String,
+  args: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+})
+export const ToolCallResponse = Schema.Struct({
+  content: Schema.Array(
+    Schema.Struct({
+      type: Schema.String,
+      text: Schema.optional(Schema.String),
+    }),
+  ),
+  isError: Schema.optional(Schema.Boolean),
+})
 export class UnsupportedOAuthError extends Schema.ErrorClass<UnsupportedOAuthError>("McpUnsupportedOAuthError")(
   { error: Schema.String },
   { httpApiStatus: 400 },
@@ -36,6 +49,7 @@ export const McpPaths = {
   authAuthenticate: "/mcp/:name/auth/authenticate",
   connect: "/mcp/:name/connect",
   disconnect: "/mcp/:name/disconnect",
+  callTool: "/mcp/:name/tools/call",
 } as const
 
 export const McpApi = HttpApi.make("mcp")
@@ -62,6 +76,19 @@ export const McpApi = HttpApi.make("mcp")
             identifier: "mcp.add",
             summary: "Add MCP server",
             description: "Dynamically add a new Model Context Protocol (MCP) server to the system.",
+          }),
+        ),
+        HttpApiEndpoint.post("callTool", McpPaths.callTool, {
+          params: { name: Schema.String },
+          query: WorkspaceRoutingQuery,
+          payload: ToolCallPayload,
+          success: described(ToolCallResponse, "MCP tool call result"),
+          error: [HttpApiError.BadRequest, McpServerNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.tools.call",
+            summary: "Call MCP tool",
+            description: "Invoke a tool on a connected Model Context Protocol (MCP) server.",
           }),
         ),
         HttpApiEndpoint.post("authStart", McpPaths.auth, {

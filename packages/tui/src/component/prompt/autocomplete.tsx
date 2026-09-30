@@ -15,6 +15,8 @@ import { useTuiPaths } from "../../context/runtime"
 import { useTuiConfig } from "../../config"
 import { useLocation } from "../../context/location"
 import { useTheme, selectedForeground } from "../../context/theme"
+import { useDialog } from "../../ui/dialog"
+import { DialogMcpProject, wantsProjectSelection } from "../dialog-mcp-project"
 import { SplitBorder } from "../../ui/border"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
@@ -87,6 +89,7 @@ export function Autocomplete(props: {
   const editor = useEditorContext()
   const sdk = useSDK()
   const sync = useSync()
+  const dialog = useDialog()
   const data = useData()
   const project = useProject()
   const slashes = useCommandSlashes()
@@ -454,6 +457,14 @@ export function Autocomplete(props: {
         display: "/" + serverCommand.name + label,
         description: serverCommand.description,
         onSelect: () => {
+          // WHIS: MCP prompts whose template asks for an indexed project get a
+          // picker instead of forcing the user to remember project names.
+          if (serverCommand.source === "mcp" && wantsProjectSelection(serverCommand.template)) {
+            const typed = props.input().getTextRange(1, props.input().cursorOffset).trim()
+            const preset = typed.split(/\s+/).slice(1).join(" ")
+            dialog.replace(() => <DialogMcpProject command={serverCommand.name} presetArgs={preset} />)
+            return
+          }
           const newText = "/" + serverCommand.name + " "
           const cursor = props.input().logicalCursor
           props.input().deleteRange(0, 0, cursor.row, cursor.col)

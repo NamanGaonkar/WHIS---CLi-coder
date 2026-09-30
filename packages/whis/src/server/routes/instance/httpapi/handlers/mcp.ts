@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { McpServerNotFoundError } from "../errors"
-import { AddPayload, AuthCallbackPayload, StatusMap, UnsupportedOAuthError } from "../groups/mcp"
+import { AddPayload, AuthCallbackPayload, StatusMap, ToolCallPayload, ToolCallResponse, UnsupportedOAuthError } from "../groups/mcp"
 
 export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handlers) =>
   Effect.gen(function* () {
@@ -72,6 +72,28 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return { success: true as const }
     })
 
+    const callTool = Effect.fn("McpHttpApi.callTool")(function* (ctx: {
+      params: { name: string }
+      payload: typeof ToolCallPayload.Type
+    }) {
+      const raw = yield* mcp
+        .callTool(ctx.params.name, ctx.payload.tool, ctx.payload.args)
+        .pipe(
+          Effect.catchTag("MCP.NotFoundError", (error) =>
+            Effect.fail(
+              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
+            ),
+          ),
+        )
+      const content = (Array.isArray(raw?.content) ? raw.content : []).map((item: any) =>
+        item?.type === "text" ? { type: "text", text: item.text } : { type: String(item?.type ?? "unknown") },
+      )
+      return yield* Schema.decodeUnknownEffect(ToolCallResponse)({
+        content,
+        isError: Boolean((raw as { isError?: boolean })?.isError),
+      }).pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+    })
+
     const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: { params: { name: string } }) {
       yield* mcp
         .connect(ctx.params.name)
@@ -105,6 +127,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       .handle("authCallback", authCallback)
       .handle("authAuthenticate", authAuthenticate)
       .handle("authRemove", authRemove)
+      .handle("callTool", callTool)
       .handle("connect", connect)
       .handle("disconnect", disconnect)
   }),
