@@ -48,13 +48,35 @@ jobs:
             name="${dir%/}"
             if [ -d "$name/bin" ]; then
               if [ "${{ matrix.os }}" = "windows-latest" ]; then
-                (cd "$name" && 7z a "../../whis-${name#whis-}.zip" bin/*)
+                # zip must land in packages/whis/dist (ONE level up from $name)
+                (cd "$name" && 7z a "../whis-${name#whis-}.zip" bin/*)
               else
-                (cd "$name" && tar -czf "../../whis-${name#whis-}.tar.gz" bin)
+                (cd "$name" && tar -czf "../whis-${name#whis-}.tar.gz" bin)
               fi
             fi
           done
-          cd ..
+          ls -la
+
+      - name: Publish legacy-named binaries (for old-whis self-update)
+        shell: bash
+        run: |
+          # Old Go whis (<=0.2.32) self-update downloads:
+          #   whis-<goos>-<goarch>[.exe]  (e.g. whis-windows-amd64.exe)
+          # Publish the new engine under those same names so every old install
+          # upgrades straight to the new WHIS.
+          cd packages/whis/dist
+          OSARCH="${{ matrix.target }}"   # e.g. windows-x64 | linux-x64 | darwin-arm64
+          GOOS="${OSARCH%-*}"
+          GOARCH="${OSARCH#*-}"
+          case "$GOARCH" in x64) GOARCH=amd64 ;; esac
+          if [ "$GOOS" = "windows" ]; then
+            cp "whis-${GOOS}-${GOARCH}/bin/whis.exe" "whis-${GOOS}-${GOARCH}.exe"
+            cp "whis-${GOOS}-${GOARCH}.exe" "whis-${OSARCH}.exe"
+          else
+            cp "whis-${GOOS}-${GOARCH}/bin/whis" "whis-${GOOS}-${GOARCH}"
+            cp "whis-${GOOS}-${GOARCH}" "whis-${OSARCH}"
+          fi
+          ls -la
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -63,6 +85,7 @@ jobs:
           path: |
             packages/whis/dist/*.zip
             packages/whis/dist/*.tar.gz
+            packages/whis/dist/whis-*
 
   release:
     needs: build
@@ -79,8 +102,9 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          for f in *.zip *.tar.gz; do
+          for f in *.zip *.tar.gz whis-*; do
             [ -f "$f" ] || continue
+            case "$f" in *.sha256) continue ;; esac
             sha256sum "$f" > "$f.sha256"
           done
 
@@ -91,5 +115,6 @@ jobs:
           files: |
             dist/*.zip
             dist/*.tar.gz
+            dist/whis-*
             dist/*.sha256
           generate_release_notes: true
