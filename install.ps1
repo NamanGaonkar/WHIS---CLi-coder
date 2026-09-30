@@ -54,7 +54,16 @@ try {
 New-Item -ItemType Directory -Path $Dest -Force | Out-Null
 Expand-Archive -Path $Zip -DestinationPath $Tmp -Force
 $exe = Get-ChildItem -Path $Tmp -Recurse -Filter "whis.exe" | Select-Object -First 1
-Copy-Item $exe.FullName (Join-Path $Dest "whis.exe") -Force
+try {
+  Copy-Item $exe.FullName (Join-Path $Dest "whis.exe") -Force
+} catch {
+  # WHIS is running - Windows locks the exe of a live process. Stage it and
+  # swap via a detached helper that retries for 60s after this exits.
+  Write-Host "  whis is running - staging update to finish when you exit whis..." -ForegroundColor Yellow
+  Copy-Item $exe.FullName (Join-Path $Dest "whis-new.exe") -Force
+  $swap = 'for /L %i in (1,1,60) do (move /y "' + $Dest + '\whis-new.exe" "' + $Dest + '\whis.exe" >nul 2>&1 & timeout /t 1 /nobreak >nul)'
+  Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $swap -WindowStyle Hidden
+}
 
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
@@ -64,6 +73,18 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$Dest*") {
   [Environment]::SetEnvironmentVariable("Path", "$userPath;$Dest", "User")
   Write-Host "  Added $Dest to your PATH (reopen your terminal to use it)"
+}
+# If an old WHIS lives in another PATH folder (e.g. ~\go\bin), update it too
+# so the freshly installed version isn't shadowed by a stale one.
+$oldSpots = @("$env:USERPROFILE\go\bin\whis.exe") | Where-Object { Test-Path $_ }
+foreach ($old in $oldSpots) {
+  try {
+    Copy-Item (Join-Path $Dest "whis.exe") $old -Force
+  } catch {
+    Copy-Item (Join-Path $Dest "whis.exe") "$old.new" -Force
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "for /L %i in (1,1,30) do (move /y `"$old.new`" `"$old`" >nul 2>&1 & timeout /t 2 /nobreak >nul)" -WindowStyle Hidden
+  }
+  Write-Host "  Also updated $old" -ForegroundColor DarkGray
 }
 Write-Host ""
 Write-Host "  Run:  whis" -ForegroundColor Yellow
