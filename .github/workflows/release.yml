@@ -70,21 +70,17 @@ jobs:
           GOOS="${OSARCH%-*}"
           GOARCH="${OSARCH#*-}"
           case "$GOARCH" in x64) GOARCH=amd64 ;; esac
-          # NOTE: for darwin-arm64 the legacy Go name equals the build dir name,
-          # so remove the dir first or cp would nest the binary inside it.
+          # NOTE: on non-windows the installer name (whis-<target>) is exactly
+          # the build dir name. Copy BOTH binaries out BEFORE removing the dir,
+          # otherwise cp nests the binary inside it and the release upload dies
+          # with "read whis-<target>: is a directory".
           if [ "$GOOS" = "windows" ]; then
             cp "${DIR}/bin/whis.exe" "whis-${GOOS}-${GOARCH}.exe"    # legacy Go name
             cp "${DIR}/bin/whis.exe" "whis-${OSARCH}.exe"            # installer name
-          elif [ "$GOOS" = "darwin" ]; then
-            # darwin-arm64: legacy AND installer names both equal the build dir
-            # name. Copy out to temp, drop the dir, then rename — otherwise cp
-            # nests the binary inside the dir (or the file dies with the dir).
-            cp "${DIR}/bin/whis" ".legacy-tmp"
-            rm -rf "$DIR"
-            mv ".legacy-tmp" "whis-${GOOS}-${GOARCH}"
           else
             cp "${DIR}/bin/whis" "whis-${GOOS}-${GOARCH}"            # legacy Go name
             cp "${DIR}/bin/whis" "whis-${OSARCH}"                    # installer name
+            rm -rf "$DIR"
           fi
           ls -la
 
