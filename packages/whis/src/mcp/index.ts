@@ -34,6 +34,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
+import { detectImportedMcp } from "@opencode-ai/core/mcp-import"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -493,7 +494,9 @@ const layer = Layer.effect(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        // Imported (VS Code / Claude Desktop / legacy whis mcp.json) first —
+        // explicit whis config entries override same-named imports.
+        const config = { ...detectImportedMcp(), ...(cfg.mcp ?? {}) }
         const s: State = {
           config: {},
           status: {},

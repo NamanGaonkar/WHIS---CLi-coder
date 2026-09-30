@@ -28,6 +28,7 @@ import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
+import { detectImportedMcp } from "@opencode-ai/core/mcp-import"
 import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
@@ -266,8 +267,11 @@ const layer = Layer.effect(
         }
       }
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "whis.json"), env))
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env))
+      // WHIS: legacy-name fallback loaded BEFORE the WHIS-named files so the
+      // WHIS files win on conflicts.
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "whis.json"), env))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "whis.jsonc"), env))
 
       const legacy = path.join(Global.Path.config, "config")
       if (existsSync(legacy)) {
@@ -401,6 +405,14 @@ const layer = Layer.effect(
             yield* merge(source, next, "global")
             yield* Effect.logDebug("loaded remote config from well-known", { url })
           }
+        }
+
+        // WHIS: imported MCP servers (VS Code, Cursor, Claude Desktop, legacy
+        // ~/.whis/mcp.json) form the BASE layer - any whis config file, global
+        // or project, overrides a same-named import.
+        const importedMcp = detectImportedMcp()
+        if (Object.keys(importedMcp).length) {
+          yield* merge(path.join(Global.Path.config, "imported-mcp"), { mcp: importedMcp }, "global")
         }
 
         const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
