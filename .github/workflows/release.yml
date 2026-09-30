@@ -109,6 +109,11 @@ jobs:
             sha256sum "$f" > "$f.sha256"
           done
 
+      - name: Delete existing release (clean re-create)
+        run: gh release delete "${{ github.ref_name }}" --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
