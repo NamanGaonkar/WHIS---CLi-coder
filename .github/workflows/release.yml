@@ -66,15 +66,16 @@ jobs:
           # upgrades straight to the new WHIS.
           cd packages/whis/dist
           OSARCH="${{ matrix.target }}"   # e.g. windows-x64 | linux-x64 | darwin-arm64
+          DIR="whis-${OSARCH}"            # dist dir: whis-windows-x64 etc
           GOOS="${OSARCH%-*}"
           GOARCH="${OSARCH#*-}"
           case "$GOARCH" in x64) GOARCH=amd64 ;; esac
           if [ "$GOOS" = "windows" ]; then
-            cp "whis-${GOOS}-${GOARCH}/bin/whis.exe" "whis-${GOOS}-${GOARCH}.exe"
-            cp "whis-${GOOS}-${GOARCH}.exe" "whis-${OSARCH}.exe"
+            cp "${DIR}/bin/whis.exe" "whis-${GOOS}-${GOARCH}.exe"    # legacy Go name
+            cp "${DIR}/bin/whis.exe" "whis-${OSARCH}.exe"            # installer name
           else
-            cp "whis-${GOOS}-${GOARCH}/bin/whis" "whis-${GOOS}-${GOARCH}"
-            cp "whis-${GOOS}-${GOARCH}" "whis-${OSARCH}"
+            cp "${DIR}/bin/whis" "whis-${GOOS}-${GOARCH}"            # legacy Go name
+            cp "${DIR}/bin/whis" "whis-${OSARCH}"                    # installer name
           fi
           ls -la
 
