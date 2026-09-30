@@ -119,6 +119,6 @@ jobs:
         run: |
           gh release delete "${{ github.ref_name }}" --yes --cleanup-tag 2>/dev/null || true
           gh release create "${{ github.ref_name }}"             --title "whis ${{ github.ref_name }} - made by Naman Gaonkar"             --generate-notes             --latest
-          gh release upload "${{ github.ref_name }}" dist/*.zip dist/*.tar.gz dist/whis-* dist/*.sha256 --clobber
+          cd dist && gh release upload "${{ github.ref_name }}" *.zip *.tar.gz whis-* --clobber; cd ..
         env:
           GH_TOKEN: ${{ github.token }}
