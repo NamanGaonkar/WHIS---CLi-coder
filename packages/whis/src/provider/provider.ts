@@ -634,6 +634,54 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       Effect.succeed({
         autoload: false,
       }),
+    // WHIS: local Ollama - discover models live from the daemon so anything
+    // the user has pulled (e.g. qwen3-coder) shows up in /models immediately.
+    ollama: Effect.fnUntraced(function* (input: Info) {
+      const host = (yield* dep.get("OLLAMA_HOST")) || "http://127.0.0.1:11434"
+      const discoverModels: CustomDiscoverModels = async () => {
+        try {
+          const res = await fetch(`${host.replace(/\/$/, "")}/api/tags`, {
+            signal: AbortSignal.timeout(2500),
+          })
+          if (!res.ok) return {}
+          const json = (await res.json()) as { models?: Array<{ name: string; size?: number }> }
+          const models: Record<string, Model> = {}
+          for (const m of json.models ?? []) {
+            if (!m.name || input.models[m.name]) continue
+            models[m.name] = {
+              id: ModelV2.ID.make(m.name),
+              providerID: ProviderV2.ID.make("ollama"),
+              name: m.name,
+              family: "",
+              api: { id: m.name, url: "http://localhost:11434/v1", npm: "@ai-sdk/openai-compatible" },
+              status: "active",
+              headers: {},
+              options: {},
+              cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+              limit: { context: 131072, output: 8192 },
+              capabilities: {
+                temperature: true,
+                reasoning: false,
+                attachment: false,
+                toolcall: true,
+                input: { text: true, audio: false, image: false, video: false, pdf: false },
+                output: { text: true, audio: false, image: false, video: false, pdf: false },
+                interleaved: false,
+              },
+              release_date: "",
+              variants: {},
+            }
+          }
+          return models
+        } catch {
+          return {}
+        }
+      }
+      return {
+        autoload: true,
+        discoverModels,
+      }
+    }),
     "cloudflare-workers-ai": Effect.fnUntraced(function* (input: Info) {
       // When baseURL is already configured (e.g. corporate config routing through a proxy/gateway),
       // skip the account ID check because the URL is already fully specified.
@@ -1568,14 +1616,18 @@ const layer = Layer.effect(
           mergeProvider(providerID, partial)
         }
 
-        const gitlab = ProviderV2.ID.make("gitlab")
-        if (discoveryLoaders[gitlab] && providers[gitlab] && isProviderAllowed(gitlab)) {
+        // WHIS: run all discovery loaders (local Ollama daemon etc). The gitlab
+        // one is stubbed out and no-ops.
+        for (const [loaderID, loader] of Object.entries(discoveryLoaders)) {
+          const providerID = ProviderV2.ID.make(loaderID)
+          const target = providers[providerID]
+          if (!target || !isProviderAllowed(providerID)) continue
           yield* Effect.promise(async () => {
             try {
-              const discovered = await discoveryLoaders[gitlab]()
+              const discovered = await loader()
               for (const [modelID, model] of Object.entries(discovered)) {
-                if (!providers[gitlab].models[modelID]) {
-                  providers[gitlab].models[modelID] = model
+                if (!target.models[modelID]) {
+                  target.models[modelID] = model
                 }
               }
             } catch (e) {}
