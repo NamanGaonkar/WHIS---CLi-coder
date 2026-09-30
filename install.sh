@@ -59,6 +59,16 @@ chmod +x "$DEST/whis"
 
 echo ""
 echo "  Installed to $DEST/whis"
+
+# If old WHIS copies live elsewhere on PATH, update them too so the freshly
+# installed version isn't shadowed by a stale one.
+whis_path="$(command -v whis 2>/dev/null || true)"
+if [ -n "$whis_path" ] && [ "$whis_path" != "$DEST/whis" ] && [ -f "$whis_path" ]; then
+  cp "$DEST/whis" "$whis_path" 2>/dev/null \
+    && echo "  Also updated $whis_path" \
+    || echo "  (could not update $whis_path - remove it manually)"
+fi
+
 case ":$PATH:" in
   *":$DEST:"*) ;;
   *) echo "  Add it to your PATH:  export PATH=\"$DEST:\$PATH\"" ;;

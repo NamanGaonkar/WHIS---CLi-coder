@@ -74,9 +74,11 @@ if ($userPath -notlike "*$Dest*") {
   [Environment]::SetEnvironmentVariable("Path", "$userPath;$Dest", "User")
   Write-Host "  Added $Dest to your PATH (reopen your terminal to use it)"
 }
-# If an old WHIS lives in another PATH folder (e.g. ~\go\bin), update it too
+# If old WHIS copies live elsewhere on PATH (e.g. ~\go\bin), update them too
 # so the freshly installed version isn't shadowed by a stale one.
-$oldSpots = @("$env:USERPROFILE\go\bin\whis.exe") | Where-Object { Test-Path $_ }
+$oldSpots = @()
+try { $oldSpots += (where.exe whis 2>$null | Where-Object { $_ -and ((Resolve-Path $_ -ErrorAction SilentlyContinue).Path -ne (Join-Path $Dest "whis.exe")) }) } catch {}
+$oldSpots = $oldSpots | Select-Object -Unique
 foreach ($old in $oldSpots) {
   try {
     Copy-Item (Join-Path $Dest "whis.exe") $old -Force
