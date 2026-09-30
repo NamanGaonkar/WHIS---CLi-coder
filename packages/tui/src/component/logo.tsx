@@ -67,6 +67,11 @@ export function Logo() {
           )
         }}
       </For>
+      <box flexDirection="row" justifyContent="center" marginTop={1}>
+        <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+          T O K E N   S U R G I C A L   A I   C O D E R
+        </text>
+      </box>
     </box>
   )
 }

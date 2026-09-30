@@ -51,6 +51,18 @@ export const UpgradeCommand = {
       return
     }
 
+    // Never downgrade a dev/newer build to an older release (e.g. a local
+    // 0.2.37 build "upgrading" to the released 0.2.36). Explicit targets are
+    // still allowed for intentional rollbacks.
+    if (!args.target) {
+      const cmp = compareSemver(InstallationVersion, target)
+      if (cmp > 0) {
+        prompts.log.warn(`whis upgrade skipped: ${InstallationVersion} is newer than the latest release (${target})`)
+        prompts.outro("Done")
+        return
+      }
+    }
+
     prompts.log.info(`From ${InstallationVersion} → ${target}`)
     const spinner = prompts.spinner()
     spinner.start("Upgrading...")
@@ -71,4 +83,15 @@ export const UpgradeCommand = {
     spinner.stop("Upgrade complete")
     prompts.outro("Done")
   },
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = a.replace(/^v/, "").split(".").map(Number)
+  const pb = b.replace(/^v/, "").split(".").map(Number)
+  for (let i = 0; i < 3; i++) {
+    const da = pa[i] || 0
+    const db = pb[i] || 0
+    if (da !== db) return da - db
+  }
+  return 0
 }
