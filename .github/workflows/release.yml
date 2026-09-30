@@ -75,11 +75,17 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             cp "${DIR}/bin/whis.exe" "whis-${GOOS}-${GOARCH}.exe"    # legacy Go name
             cp "${DIR}/bin/whis.exe" "whis-${OSARCH}.exe"            # installer name
+          elif [ "$GOOS" = "darwin" ]; then
+            # darwin-arm64: legacy AND installer names both equal the build dir
+            # name. Copy out to temp, drop the dir, then rename — otherwise cp
+            # nests the binary inside the dir (or the file dies with the dir).
+            cp "${DIR}/bin/whis" ".legacy-tmp"
+            rm -rf "$DIR"
+            mv ".legacy-tmp" "whis-${GOOS}-${GOARCH}"
           else
             cp "${DIR}/bin/whis" "whis-${GOOS}-${GOARCH}"            # legacy Go name
             cp "${DIR}/bin/whis" "whis-${OSARCH}"                    # installer name
           fi
-          rm -rf "$DIR"                                              # avoid dir/file name collision on upload
           ls -la
 
       - name: Upload artifacts
