@@ -9,7 +9,7 @@
  ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝
 ```
 
-**WHIS [Personal Edition]** — a fast, terminal-native AI coding agent, built by Naman Gaonkar.
+**WHIS** — a fast, terminal-native AI coding agent, built by Naman Gaonkar.
 
 WHIS lives in your terminal, reads and edits your code, runs commands, and gets things done
 with token-surgical precision. Strictly BYOK: your keys, your providers, direct connections.
