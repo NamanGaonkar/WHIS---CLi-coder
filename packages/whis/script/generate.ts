@@ -41,8 +41,21 @@ const WHIS_PROVIDERS: Record<
 }
 
 for (const [id, patch] of Object.entries(WHIS_PROVIDERS)) {
-  const provider = catalog[id]
-  if (!provider) continue
+  let provider = catalog[id]
+  if (!provider) {
+    // models.dev has no entry for this WHIS provider (e.g. local Ollama).
+    // Create it so the provider shows up in /models.
+    if (id !== "ollama") continue
+    catalog[id] = {
+      id,
+      env: patch.env,
+      name: patch.name ?? id,
+      api: patch.api,
+      npm: "@ai-sdk/openai-compatible",
+      models: {},
+    }
+    provider = catalog[id]
+  }
   provider.env = patch.env
   if (patch.api) provider.api = patch.api
   if (patch.name) provider.name = patch.name
@@ -50,7 +63,7 @@ for (const [id, patch] of Object.entries(WHIS_PROVIDERS)) {
 
 // Local Ollama seed models; the daemon's live /api/tags discovery fills in
 // the rest at runtime.
-if (catalog.ollama && Object.keys(catalog.ollama.models ?? {}).length === 0) {
+if (catalog.ollama && (!catalog.ollama.models || Object.keys(catalog.ollama.models).length === 0)) {
   const local = (id: string, name: string, ctx: number) => ({
     id,
     name,
@@ -61,6 +74,7 @@ if (catalog.ollama && Object.keys(catalog.ollama.models ?? {}).length === 0) {
     release_date: "2025-01-01",
     limit: { context: ctx, output: 8192 },
   })
+  catalog.ollama.models ??= {}
   catalog.ollama.models = {
     "qwen3-coder:30b": local("qwen3-coder:30b", "Qwen3 Coder 30B", 262144),
     "qwen2.5-coder:7b": local("qwen2.5-coder:7b", "Qwen2.5 Coder 7B", 32768),
@@ -73,6 +87,15 @@ if (catalog.ollama && Object.keys(catalog.ollama.models ?? {}).length === 0) {
 // Strict BYOK: hosted gateways never ship in the WHIS catalog.
 for (const id of ["opencode", "opencode-go", "llmgateway", "zenmux"]) {
   delete catalog[id]
+}
+
+// Scrub stray "opencode" references from third-party provider entries
+// (doc URLs, endpoint paths). WHIS users should never see the old name.
+for (const provider of Object.values(catalog)) {
+  const json = JSON.stringify(provider)
+  if (!json.toLowerCase().includes("opencode")) continue
+  const cleaned = JSON.parse(json.replaceAll(/opencode/gi, "whis"))
+  catalog[cleaned.id] = cleaned
 }
 
 export const modelsData = JSON.stringify(catalog)
