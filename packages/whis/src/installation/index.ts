@@ -175,19 +175,15 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
         }
       }),
       method: Effect.fn("Installation.method")(function* () {
+        // WHIS ships as a standalone binary (installed via install.sh/install.ps1
+        // or dropped in any bin dir). Everything is served from GitHub releases;
+        // never consult npm/homebrew/choco/scoop which know nothing about WHIS.
         if (process.execPath.includes(path.join(".whis", "bin"))) return "curl" as Method
         if (process.execPath.includes(path.join(".local", "bin"))) return "curl" as Method
+        if (path.basename(process.execPath).toLowerCase().startsWith("whis")) return "curl" as Method
         const exec = process.execPath.toLowerCase()
 
-        const checks: Array<{ name: Method; command: () => Effect.Effect<string> }> = [
-          { name: "npm", command: () => text(["npm", "list", "-g", "--depth=0"]) },
-          { name: "yarn", command: () => text(["yarn", "global", "list"]) },
-          { name: "pnpm", command: () => text(["pnpm", "list", "-g", "--depth=0"]) },
-          { name: "bun", command: () => text(["bun", "pm", "ls", "-g"]) },
-          { name: "brew", command: () => text(["brew", "list", "--formula", "opencode"]) },
-          { name: "scoop", command: () => text(["scoop", "list", "opencode"]) },
-          { name: "choco", command: () => text(["choco", "list", "--limit-output", "opencode"]) },
-        ]
+        const checks: Array<{ name: Method; command: () => Effect.Effect<string> }> = []
 
         checks.sort((a, b) => {
           const aMatches = exec.includes(a.name)
@@ -199,63 +195,17 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
 
         for (const check of checks) {
           const output = yield* check.command()
-          const installedName =
-            check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "opencode" : "opencode-ai"
-          if (output.includes(installedName)) {
+          if (output.includes("whis")) {
             return check.name
           }
         }
 
-        return "unknown" as Method
+        return "curl" as Method
       }),
       latest: Effect.fn("Installation.latest")(function* (installMethod?: Method) {
-        const detectedMethod = installMethod || (yield* result.method())
-
-        if (detectedMethod === "brew") {
-          const formula = yield* getBrewFormula()
-          if (formula.includes("/")) {
-            const infoJson = yield* text(["brew", "info", "--json=v2", formula])
-            const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BrewInfoV2))(infoJson)
-            return info.formulae[0].versions.stable
-          }
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get("https://formulae.brew.sh/api/formula/opencode.json").pipe(
-              HttpClientRequest.acceptJson,
-            ),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(BrewFormula)(response)
-          return data.versions.stable
-        }
-
-        if (detectedMethod === "npm" || detectedMethod === "bun" || detectedMethod === "pnpm") {
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get(
-              `${yield* NpmConfig.registry(process.cwd())}/opencode-ai/${InstallationChannel}`,
-            ).pipe(HttpClientRequest.acceptJson),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(NpmPackage)(response)
-          return data.version
-        }
-
-        if (detectedMethod === "choco") {
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get(
-              "https://community.chocolatey.org/api/v2/Packages?$filter=Id%20eq%20%27opencode%27%20and%20IsLatestVersion&$select=Version",
-            ).pipe(HttpClientRequest.setHeaders({ Accept: "application/json;odata=verbose" })),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(ChocoPackage)(response)
-          return data.d.results[0].Version
-        }
-
-        if (detectedMethod === "scoop") {
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get(
-              "https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/opencode.json",
-            ).pipe(HttpClientRequest.setHeaders({ Accept: "application/json" })),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(ScoopManifest)(response)
-          return data.version
-        }
+        // WHIS: latest version always comes from WHIS GitHub releases. There is
+        // no npm/homebrew/choco/scoop distribution to check.
+        void installMethod
 
         const response = yield* httpOk.execute(
           HttpClientRequest.get(
