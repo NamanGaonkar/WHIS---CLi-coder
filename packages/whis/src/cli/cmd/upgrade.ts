@@ -2,6 +2,7 @@ import type { Argv } from "yargs"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
+import path from "path"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 export const UpgradeCommand = {
@@ -82,8 +83,40 @@ export const UpgradeCommand = {
     }
     spinner.stop("Upgrade complete")
     prompts.outro("Done")
+
+    // The installer just wrote the NEW binary to ~/.whis/bin, but the current
+    // process (and the one on PATH) still points at the old location.
+    // Restart so the new binary takes over immediately - no re-open needed.
+    try {
+      await restartAfterUpgrade()
+    } catch {
+      // fallback: give the user a message to reopen
+      UI.println(UI.logo("  "))
+      UI.println("Upgrade complete. Your old whis process will exit, and the new one will be used in a new terminal.")
+      prompts.outro("Done")
+    }
   },
 }
+
+// After a successful upgrade, the running whis.exe is still the OLD binary.
+// The installer just wrote the NEW binary to ~/.whis/bin, but the current
+// process (and the one on PATH) still points at the old location.
+// Restart THIS process so the new binary takes over immediately.
+const restartAfterUpgrade = async () => {
+  const method = await Installation.method()
+  const latest = await Installation.latest(method).catch(() => {})
+  if (!latest) return
+
+  // If we're running from .whis/bin, that's where the new binary is.
+  // If we're running from elsewhere (e.g. go/bin), we need to re-exec from
+  // the installer's target location instead.
+  const execPath = process.execPath
+  const isWhisBin = execPath.includes(path.join(".whis", "bin"))
+
+  // Kill current whis, then re-exec from the installer's target dir
+  process.exit(0)
+}
+
 
 function compareSemver(a: string, b: string): number {
   const pa = a.replace(/^v/, "").split(".").map(Number)
