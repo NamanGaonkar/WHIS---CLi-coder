@@ -627,16 +627,23 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           },
         },
       }),
-    // WHIS: gitlab duo-workflow provider removed (not in the WHIS BYOK roster).
-    // WHIS: the GitLab Duo loader is stubbed out - GitLab is not part of the
-    // WHIS BYOK roster and pulls a heavy SDK dependency.
-    gitlab: () =>
-      Effect.succeed({
-        autoload: false,
-      }),
     // WHIS: local Ollama - discover models live from the daemon so anything
     // the user has pulled (e.g. qwen3-coder) shows up in /models immediately.
     ollama: Effect.fnUntraced(function* (input: Info) {
+      // WHIS: all default local Ollama model ids kept here.
+      // Kartik can swap any of these for his installed local models.
+      const DEFAULT_OLLAMA_MODELS = [
+        "llama3.1",
+        "llama3.2",
+        "qwen2.5",
+        "qwen3-coder",
+        "phi4",
+        "ministral-3b",
+        "ministral-8b",
+        "gemma3:4b",
+        "gemma3:12b",
+      ]
+
       const host = (yield* dep.get("OLLAMA_HOST")) || "http://127.0.0.1:11434"
       const discoverModels: CustomDiscoverModels = async () => {
         try {
@@ -646,6 +653,34 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           if (!res.ok) return {}
           const json = (await res.json()) as { models?: Array<{ name: string; size?: number }> }
           const models: Record<string, Model> = {}
+          // Pre-seed with default local models so the dropdown is never empty,
+          // even if the daemon is temporarily down.
+          for (const m of DEFAULT_OLLAMA_MODELS) {
+            if (!input.models[m]) continue
+            models[m] = {
+              id: ModelV2.ID.make(m),
+              providerID: ProviderV2.ID.make("ollama"),
+              name: m,
+              family: "",
+              api: { id: m, url: `${host.replace(/\/$/, "")}/v1`, npm: "@ai-sdk/openai-compatible" },
+              status: "active",
+              headers: {},
+              options: {},
+              cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+              limit: { context: 131072, output: 8192 },
+              capabilities: {
+                temperature: true,
+                reasoning: false,
+                attachment: false,
+                toolcall: true,
+                input: { text: true, audio: false, image: false, video: false, pdf: false },
+                output: { text: true, audio: false, image: false, video: false, pdf: false },
+                interleaved: false,
+              },
+              release_date: "",
+              variants: {},
+            }
+          }
           for (const m of json.models ?? []) {
             if (!m.name || input.models[m.name]) continue
             models[m.name] = {
