@@ -21,6 +21,9 @@ $Target = "whis-windows-$Arch"
 $Dest = "$env:USERPROFILE\.whis\bin"
 
 # Resolve latest release version
+# The executable that started this install (the one the user ran).
+$LazyOriginalExe = if ($env:WhisOriginalExe) { $env:WhisOriginalExe } else { $null }
+
 $Version = "latest"
 if ($env:VERSION) { $Version = $env:VERSION }
 else {
@@ -67,8 +70,24 @@ try {
 
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
+# Also update the original exe's folder (e.g. ~\go\bin) so a new terminal
+# always picks up the latest whis instead of a shadowed stale copy.
+if ($LazyOriginalExe -and (Test-Path $LazyOriginalExe)) {
+  $OriginalDir = Split-Path $LazyOriginalExe -Parent
+  if ((Resolve-Path $LazyOriginalExe -ErrorAction SilentlyContinue).Path -ne $Dest) {
+    try {
+      Copy-Item $exe.FullName "$OriginalDir\\whis.exe" -Force
+      Write-Host "  Also updated $OriginalDir\\whis.exe" -ForegroundColor DarkGray
+    } catch {
+      Copy-Item $exe.FullName "$OriginalDir\\whis-new.exe" -Force
+      $swap = 'for /L %i in (1,1,60) do (move /y `"' + $OriginalDir + '\whis-new.exe" `"' + $OriginalDir + '\whis.exe" >nul 2>&1 & timeout /t 1 /nobreak >nul)'
+      Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $swap -WindowStyle Hidden
+    }
+  }
+}
+
 Write-Host ""
-Write-Host "  Installed to $Dest\whis.exe" -ForegroundColor Green
+Write-Host "  Installed to $Dest\\whis.exe" -ForegroundColor Green
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$Dest*") {
   [Environment]::SetEnvironmentVariable("Path", "$userPath;$Dest", "User")

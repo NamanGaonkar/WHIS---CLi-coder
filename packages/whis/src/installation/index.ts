@@ -155,14 +155,13 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
         const response = yield* httpOk.execute(HttpClientRequest.get(scriptUrl))
         const body = yield* response.text
         const bodyBytes = new TextEncoder().encode(body)
-        if (isWindows) {
-          const result = yield* appProcess.run(
+        if (isWindows) {          const result = yield* appProcess.run(
             ChildProcess.make(
               "powershell",
               ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
               {
                 stdin: Stream.make(bodyBytes),
-                env: { VERSION: target },
+                env: { VERSION: target, WhisOriginalExe: process.execPath, WHIS_ORIGINAL_EXE: process.execPath },
                 extendEnv: true,
               },
             ),

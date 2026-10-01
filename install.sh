@@ -33,6 +33,8 @@ esac
 TARGET="whis-${PLATFORM}-${ARCH}"
 
 # Resolve latest release version
+# The executable that started this install (the one the user ran).
+ORIGINAL_WHIS="${WHIS_ORIGINAL_EXE:-}"
 if [ "${VERSION:-latest}" = "latest" ]; then
   VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
   if [ -z "$VERSION" ]; then echo "Failed to resolve latest release"; exit 1; fi
@@ -62,6 +64,19 @@ echo "  Installed to $DEST/whis"
 
 # If old WHIS copies live elsewhere on PATH, update them too so the freshly
 # installed version isn't shadowed by a stale one.
+# The executable that started this install (the one the user ran).
+ORIGINAL_WHIS="${WHIS_ORIGINAL_EXE:-}"
+# Also update the original exe's folder (e.g. ~/go/bin) so a new terminal always
+# picks up the latest whis instead of a shadowed stale copy.
+if [ -n "$ORIGINAL_WHIS" ] && [ -f "$ORIGINAL_WHIS" ] && [ "$ORIGINAL_WHIS" != "$DEST/whis" ]; then
+  ORIG_DIR=$(dirname "$ORIGINAL_WHIS")
+  if [ "$ORIG_DIR/whis" != "$DEST/whis" ] && [ -f "$ORIG_DIR/whis" ]; then
+    cp "$DEST/whis" "$ORIG_DIR/whis" 2>/dev/null \
+      && echo "  Also updated $ORIG_DIR/whis" \
+      || echo "  (could not update $ORIG_DIR/whis - remove it manually)"
+  fi
+fi
+
 whis_path="$(command -v whis 2>/dev/null || true)"
 if [ -n "$whis_path" ] && [ "$whis_path" != "$DEST/whis" ] && [ -f "$whis_path" ]; then
   cp "$DEST/whis" "$whis_path" 2>/dev/null \
