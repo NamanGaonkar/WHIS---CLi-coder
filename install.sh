@@ -13,7 +13,7 @@ echo "  ██║ █╗ ██║ ███████║ ██║ ███�
 echo "  ██║███╗██║ ██╔══██║ ██║ ╚════██║"
 echo "  ╚███╔███╔╝ ██║  ██║ ██║ ███████║"
 echo "   ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝"
-echo "  Installing WHIS [Personal Edition]..."
+echo "  Installing WHIS (no edition tagging)"
 echo ""
 
 # Detect platform
