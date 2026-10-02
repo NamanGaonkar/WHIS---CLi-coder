@@ -76,10 +76,10 @@ if ($LazyOriginalExe -and (Test-Path $LazyOriginalExe)) {
   $OriginalDir = Split-Path $LazyOriginalExe -Parent
   if ((Resolve-Path $LazyOriginalExe -ErrorAction SilentlyContinue).Path -ne $Dest) {
     try {
-      Copy-Item $exe.FullName "$OriginalDir\\whis.exe" -Force
+      Copy-Item "$Dest\\whis.exe" "$OriginalDir\\whis.exe" -Force
       Write-Host "  Also updated $OriginalDir\\whis.exe" -ForegroundColor DarkGray
     } catch {
-      Copy-Item $exe.FullName "$OriginalDir\\whis-new.exe" -Force
+      Copy-Item "$Dest\\whis-new.exe" "$OriginalDir\\whis-new.exe" -Force
       $swap = 'for /L %i in (1,1,60) do (move /y `"' + $OriginalDir + '\whis-new.exe" `"' + $OriginalDir + '\whis.exe" >nul 2>&1 & timeout /t 1 /nobreak >nul)'
       Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $swap -WindowStyle Hidden
     }
