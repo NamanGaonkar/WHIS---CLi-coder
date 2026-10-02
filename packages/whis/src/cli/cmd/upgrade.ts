@@ -4,6 +4,7 @@ import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
 import path from "path"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { spawnSync } from "child_process"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
@@ -98,25 +99,61 @@ export const UpgradeCommand = {
   },
 }
 
-// After a successful upgrade, the running whis.exe is still the OLD binary.
-// The installer just wrote the NEW binary to ~/.whis/bin, but the current
-// process (and the one on PATH) still points at the old location.
-// Restart THIS process so the new binary takes over immediately.
+// After a successful upgrade, the running whis.exe is still the old binary.
+// The installer just wrote the NEW binary to ~/.whis/bin. Two things must
+// happen so the upgrade sticks:
+//  1. Restart THIS process from the NEW binary (not the stale shadow) so the
+//     running session continues with the new code.
+//  2. Copy the new binary over any stale whis shadow on PATH (e.g. ~/go/bin)
+//     so a fresh terminal resolves `whis` to the new version, not an old one.
 const restartAfterUpgrade = async () => {
-  const method = await Installation.method()
-  const latest = await Installation.latest(method).catch(() => {})
-  if (!latest) return
+  const home = process.env.HOME || process.env.USERPROFILE || ""
+  const newBin = path.join(home, ".whis", "bin", "whis.exe")
 
-  // If we're running from .whis/bin, that's where the new binary is.
-  // If we're running from elsewhere (e.g. go/bin), we need to re-exec from
-  // the installer's target location instead.
-  const execPath = process.execPath
-  const isWhisBin = execPath.includes(path.join(".whis", "bin"))
+  // If we're running from .whis/bin, that's already the new location, so
+  // just exit. Otherwise the running whis.exe is the STALE shadow, and the
+  // installer has already swapped ~/.whis/bin/whis.exe to the new build.
+  if (process.execPath.includes(path.join(".whis", "bin"))) {
+    process.exit(0)
+  }
 
-  // Kill current whis, then re-exec from the installer's target dir
+  // 1. Copy the new binary over any stale whis shadow on PATH (e.g. ~/go/bin)
+  //    so a fresh terminal resolves `whis` to the new version, not an old one.
+  if (process.execPath !== newBin) {
+    const { execSync } = await import("child_process")
+    const pathValue = (process.env.PATH || "").split(path.delimiter)
+    for (const dir of pathValue) {
+      const candidate = path.join(dir, "whis.exe")
+      try {
+        if (require("fs").existsSync(candidate)) {
+          // Skip our own running exe and the canonical install dir.
+          if (candidate !== process.execPath && !candidate.includes(path.join(".whis", "bin"))) {
+            require("fs").copyFileSync(newBin, candidate)
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // 2. Spin up the fresh binary and drop the old (stale) process so it dies.
+  //    The fresh child inherits this env, so its own `whis` resolves to the
+  //    new ~/.whis/bin/whis.exe and takes over the terminal. We use spawn
+  //    (asynchronous, detached) rather than spawnSync so the fresh process
+  //    keeps running after this one exits.
+  try {
+    const { spawn } = await import("child_process")
+    spawn(newBin, [], {
+      stdio: "inherit",
+      detached: true,
+      env: { ...process.env },
+    })
+  } catch {
+    // best-effort: the user can reopen whis and the new binary is already on PATH
+  }
   process.exit(0)
 }
-
 
 function compareSemver(a: string, b: string): number {
   const pa = a.replace(/^v/, "").split(".").map(Number)
