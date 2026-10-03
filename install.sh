@@ -41,7 +41,14 @@ if [ "${VERSION:-latest}" = "latest" ]; then
 fi
 echo "  Version: ${VERSION}"
 
-URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARGET}.tar.gz"
+# Release download URLs need the full git tag (e.g. v0.2.50). `whis upgrade
+# 0.2.50` passes a bare version, so normalise it before building the URL.
+case "$VERSION" in
+  v*) TAG="$VERSION" ;;
+  *) TAG="v${VERSION}" ;;
+esac
+
+URL="https://github.com/${REPO}/releases/download/${TAG}/${TARGET}.tar.gz"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

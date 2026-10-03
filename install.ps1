@@ -135,13 +135,23 @@ if ($env:VERSION) { $Version = $env:VERSION } else {
 }
 Write-Host "  Version: $Version"
 
-$Url = "https://github.com/$Repo/releases/download/$Version/$Target.zip"
+# Release download URLs need the full git tag (e.g. v0.2.50). `whis upgrade
+# 0.2.50` passes a bare version, so normalise it before building the URL.
+$Tag = if ($Version -match "^v") { $Version } else { "v$Version" }
+
+$Url = "https://github.com/$Repo/releases/download/$Tag/$Target.zip"
 $Tmp = Join-Path $env:TEMP ("whis-install-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Path $Tmp -Force | Out-Null
 
 Write-Host "  Downloading $Target..."
 $Zip = Join-Path $Tmp "whis.zip"
-Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing
+try {
+  Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing -ErrorAction Stop
+} catch {
+  Write-Host "  Download failed: $_" -ForegroundColor Red
+  Write-Host "  Tried: $Url" -ForegroundColor DarkGray
+  exit 1
+}
 
 # Verify checksum if available
 try {
