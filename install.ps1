@@ -120,8 +120,11 @@ function Remove-WhisStaleFiles {
 $LazyOriginalExe = if ($env:WhisOriginalExe) { $env:WhisOriginalExe } else { $null }
 
 $Version = "latest"
-if ($env:VERSION) { $Version = $env:VERSION }
-else {
+# NOTE: keep `else` on the SAME line as the closing brace. `whis upgrade` pipes
+# this script into `powershell -Command -`, which executes it statement by
+# statement; a leading `else` on its own line is then parsed as a command and
+# aborts the rest of the install.
+if ($env:VERSION) { $Version = $env:VERSION } else {
   try {
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
     $Version = $rel.tag_name

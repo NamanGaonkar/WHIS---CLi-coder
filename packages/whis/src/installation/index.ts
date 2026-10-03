@@ -1,13 +1,15 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Effect, Layer, Schema, Context, Stream } from "effect"
+import { Effect, Layer, Schema, Context } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { errorMessage } from "@/util/error"
 import { ChildProcess } from "effect/unstable/process"
 import { AppProcess } from "@opencode-ai/core/process"
+import fs from "fs/promises"
+import os from "os"
 import path from "path"
 import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import semver from "semver"
@@ -145,41 +147,51 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
     const upgradeCurl = Effect.fnUntraced(
       function* (target: string) {
         // WHIS: self-update via the GitHub release install script.
-        // Windows pipes install.ps1 into PowerShell; everything else uses
-        // install.sh through sh. (Piping the bash script into cmd was the
-        // source of the "garbage text" upgrade failures.)
+        //
+        // The script is written to a temp file and executed by path. It must
+        // NOT be piped into `powershell -Command -`: that mode reads stdin one
+        // statement at a time and silently abandons everything after the first
+        // multi-line block, which is why upgrades used to report success while
+        // `whis --version` never changed.
         const isWindows = process.platform === "win32"
         const scriptUrl = isWindows
           ? "https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.ps1"
           : "https://raw.githubusercontent.com/NamanGaonkar/WHIS---CLi-coder/main/install.sh"
         const response = yield* httpOk.execute(HttpClientRequest.get(scriptUrl))
         const body = yield* response.text
-        const bodyBytes = new TextEncoder().encode(body)
-        if (isWindows) {          const result = yield* appProcess.run(
-            ChildProcess.make(
-              "powershell",
-              ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
-              {
-                stdin: Stream.make(bodyBytes),
+
+        const scriptDir = yield* appProcess.run(ChildProcess.make("cmd", ["/c", "echo", "%TEMP%"])).pipe(
+          Effect.map((r) => r.stdout.toString("utf8").trim()),
+          Effect.catch(() => Effect.succeed(os.tmpdir())),
+        )
+        const scriptPath = path.join(
+          scriptDir || os.tmpdir(),
+          `whis-upgrade-${process.pid}-${Date.now()}.${isWindows ? "ps1" : "sh"}`,
+        )
+        yield* Effect.promise(() => fs.writeFile(scriptPath, body, "utf8"))
+
+        const runScript = Effect.gen(function* () {
+          if (isWindows) {
+            return yield* appProcess.run(
+              ChildProcess.make("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
                 env: { VERSION: target, WhisOriginalExe: process.execPath, WHIS_ORIGINAL_EXE: process.execPath },
                 extendEnv: true,
-              },
-            ),
-          )
-          return {
-            code: result.exitCode,
-            stdout: result.stdout.toString("utf8"),
-            stderr: result.stderr.toString("utf8"),
+              }),
+            )
           }
-        }
-        const shell = yield* upgradeScriptShell()
-        const result = yield* appProcess.run(
-          ChildProcess.make(shell, [], {
-            stdin: Stream.make(bodyBytes),
-            env: { VERSION: target },
-            extendEnv: true,
-          }),
+          const shell = yield* upgradeScriptShell()
+          return yield* appProcess.run(
+            ChildProcess.make(shell, [scriptPath], {
+              env: { VERSION: target, WHIS_ORIGINAL_EXE: process.execPath },
+              extendEnv: true,
+            }),
+          )
+        })
+
+        const result = yield* runScript.pipe(
+          Effect.ensuring(Effect.promise(() => fs.rm(scriptPath, { force: true }).catch(() => {}))),
         )
+
         return {
           code: result.exitCode,
           stdout: result.stdout.toString("utf8"),
