@@ -134,8 +134,15 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
 
     const upgradeFailure = (method: Method, result?: { code: number; stdout: string; stderr: string }) => {
       if (method === "choco") return "not running from an elevated command shell"
-      if (result) return `Upgrade failed for ${method} (exit code ${result.code}).`
-      return `Upgrade failed for ${method}.`
+      if (!result) return `Upgrade failed for ${method}.`
+      // Surface the script's own output; without it a failed upgrade is a dead
+      // end because the installer explains nothing on stderr.
+      const detail = [result.stderr, result.stdout]
+        .map((text) => (text ?? "").trim())
+        .filter(Boolean)
+        .join("\n")
+      const head = `Upgrade failed for ${method} (exit code ${result.code}).`
+      return detail ? `${head}\n${detail}` : head
     }
 
     const upgradeScriptShell = Effect.fnUntraced(function* () {
@@ -192,13 +199,20 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
           Effect.ensuring(Effect.promise(() => fs.rm(scriptPath, { force: true }).catch(() => {}))),
         )
 
-        return {
+        const output = {
           code: result.exitCode,
           stdout: result.stdout.toString("utf8"),
           stderr: result.stderr.toString("utf8"),
         }
+        // Report the script's own output on failure instead of a bare exit code,
+        // so a broken upgrade is diagnosable rather than a silent no-op.
+        if (output.code !== 0) {
+          return yield* new UpgradeFailedError({ stderr: upgradeFailure("curl", output) })
+        }
+        return output
       },
       Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
+    )
     )
 
     const result: Interface = {
