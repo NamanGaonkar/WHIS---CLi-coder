@@ -1,0 +1,7 @@
+Remove an outdated note from WHIS cross-session memory.
+
+Use when the user retracts a preference ("stop using X", "we no longer use Y") or corrects a stored rule. Every bullet containing the phrase is dropped from the target scope.
+
+Scope:
+  - "global"  -> ~/.whis/memory/
+  - "project" -> <repo>/.whis/memory/

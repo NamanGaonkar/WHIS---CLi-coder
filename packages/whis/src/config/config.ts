@@ -415,6 +415,16 @@ const layer = Layer.effect(
           yield* merge(path.join(Global.Path.config, "imported-mcp"), { mcp: importedMcp }, "global")
         }
 
+        // WHIS ships a live documentation fetcher by default so the agent can
+        // verify current reference docs instead of relying on training cutoff.
+        // This is the LOWEST precedence layer: any user/global/project entry
+        // named "doc-fetcher" overrides it (e.g. to disable or retarget it).
+        yield* merge(
+          path.join(Global.Path.config, "built-in-mcp"),
+          { mcp: { "doc-fetcher": { type: "local", command: ["bunx", "-y", "mcp-fetch-server"] } } },
+          "global",
+        )
+
         const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
         yield* merge(Global.Path.config, global, "global")
 

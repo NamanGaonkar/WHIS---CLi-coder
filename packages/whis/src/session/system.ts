@@ -23,6 +23,7 @@ import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
+import { Memory } from "./memory"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export function provider(model: Provider.Model) {
@@ -54,6 +55,8 @@ export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
+  readonly memory: () => Effect.Effect<string | undefined>
+  readonly docs: () => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
@@ -63,6 +66,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const skill = yield* Skill.Service
     const mcp = yield* MCP.Service
+    const memory = yield* Memory.Service
     const locations = yield* LocationServiceMap.Service
 
     return Service.of({
@@ -135,6 +139,44 @@ const layer = Layer.effect(
           "</mcp_instructions>",
         ].join("\n")
       }),
+
+      memory: Effect.fn("SystemPrompt.memory")(function* () {
+        // Seed both folders so a brand new install always has somewhere to
+        // write, then read back whatever a previous session stored.
+        yield* memory.ensure("global")
+        yield* memory.ensure("project")
+        const blocks = yield* memory.blocks()
+
+        return [
+          "The following is your persistent cross-session memory. You can consult it and update it as you work.",
+          "<persistent_memory>",
+          ...blocks.flatMap((block) => [
+            `  <memory scope="${block.scope}" file="${block.file}">`,
+            ...block.content.split("\n").map((line) => `    ${line}`),
+            "  </memory>",
+          ]),
+          "</persistent_memory>",
+          "Memory rules:",
+          '- When the user says "remember this", "always use X", "from now on use Y", or states a personal preference or project convention, immediately call save_memory to persist it to disk.',
+          '- Use target "global" for user preferences, styling and tooling; use target "project" for architecture decisions, conventions and known quirks.',
+          "- Before answering anything that depends on user style or project structure, check persistent_memory above.",
+          "- When the user retracts or corrects a stored rule, call forget_memory to drop the stale entry.",
+        ].join("\n")
+      }),
+
+      docs: Effect.fn("SystemPrompt.docs")(function* () {
+        const clients = yield* mcp.clients()
+        const fetchers = Object.keys(clients).filter((name) => /fetch|docs|devdocs|perplexity|context7/i.test(name))
+        if (fetchers.length === 0) return
+
+        return [
+          "<live_documentation>",
+          "Live documentation servers are available: " + fetchers.map((name) => `${name}*`).join(", ") + ".",
+          "When writing code for external libraries, newly updated frameworks, or APIs subject to breaking changes, autonomously invoke the documentation/fetch tool to inspect current reference docs before generating implementation code.",
+          "Do not guess deprecated parameters, legacy configurations, or hallucinated package methods.",
+          "</live_documentation>",
+        ].join("\n")
+      }),
     })
   }),
 )
@@ -148,7 +190,7 @@ const locationServiceMapNode = LayerNode.make({
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Skill.node, MCP.node, locationServiceMapNode],
+  deps: [Skill.node, MCP.node, Memory.node, locationServiceMapNode],
 })
 
 export * as SystemPrompt from "./system"

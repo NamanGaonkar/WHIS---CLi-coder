@@ -1,0 +1,10 @@
+Persist a note into WHIS cross-session memory so it survives this session.
+
+Call this immediately when the user says "remember this", "always use X", "from now on use Y", or states a personal preference or project convention.
+
+Scope:
+  - "global"  -> ~/.whis/memory/       (user preferences, styling, tooling)
+  - "project" -> <repo>/.whis/memory/   (architecture decisions, quirks, deps)
+
+Re-saving the same key replaces the previous entry instead of duplicating it, so
+it is safe to call again when a preference changes.
