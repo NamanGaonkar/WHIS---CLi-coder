@@ -59,7 +59,22 @@ function Install-WhisBinary {
     return $false
   }
 
-  Copy-Item $SourcePath $TargetPath -Force
+  # CRITICAL: the target path is now free but the old binary sits in $stale.
+  # If this copy fails we MUST put the old binary back, otherwise the user is
+  # left with no whis at all. Never let an exception escape mid-swap.
+  try {
+    Copy-Item $SourcePath $TargetPath -Force -ErrorAction Stop
+  } catch {
+    try {
+      Rename-Item -LiteralPath $stale -NewName ([IO.Path]::GetFileName($TargetPath)) -ErrorAction Stop
+    } catch {
+      # Rollback failed too. Point the user straight at the surviving file.
+      Write-Host "  CRITICAL: could not install or restore $TargetPath" -ForegroundColor Red
+      Write-Host "  Your previous binary is at: $stale" -ForegroundColor Red
+      Write-Host "  Copy it back to: $TargetPath" -ForegroundColor Red
+    }
+    return $false
+  }
 
   # The renamed original is still mapped by the live process, so it usually
   # cannot be deleted yet. Try anyway, and if it is still locked just leave it:
@@ -73,9 +88,25 @@ function Install-WhisBinary {
 # Delete whis.exe.old / whis.exe.new leftovers from earlier upgrades. These can
 # only be removed once the process that had them mapped has exited, so this runs
 # on each install rather than from a background retry loop.
+#
+# SAFETY: if no real whis.exe is present, a .old file is the user's ONLY working
+# binary (an interrupted swap). Never delete it in that case - restore it instead.
 function Remove-WhisStaleFiles {
   param([string]$Dir)
   if (-not (Test-Path $Dir)) { return }
+  $live = Join-Path $Dir "whis.exe"
+  $hasLive = Test-Path $live
+  if (-not $hasLive) {
+    $orphan = Get-ChildItem -Path $Dir -Filter "whis*.old" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($orphan) {
+      try {
+        Rename-Item -LiteralPath $orphan.FullName -NewName "whis.exe" -ErrorAction Stop
+        Write-Host "  Restored $live from a previous interrupted upgrade" -ForegroundColor Yellow
+        $hasLive = $true
+      } catch { }
+    }
+  }
+  if (-not $hasLive) { return }
   Get-ChildItem -Path $Dir -Filter "whis*.old" -ErrorAction SilentlyContinue | ForEach-Object {
     try { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue } catch { }
   }

@@ -107,7 +107,12 @@ export const UpgradeCommand = {
 // move the stale binary aside (freeing the path), write the new one, and leave
 // the old file for the OS to release on exit. This is what makes an upgrade
 // actually stick instead of silently leaving the old binary on PATH.
-function replaceBinary(source: string, target: string) {
+export function replaceBinary(source: string, target: string) {
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+  } catch {
+    // best-effort
+  }
   try {
     fs.copyFileSync(source, target)
     return true
@@ -131,6 +136,13 @@ function replaceBinary(source: string, target: string) {
   try {
     fs.copyFileSync(source, target)
   } catch {
+    // CRITICAL: the target path is free but the old binary now sits in $stale.
+    // Put it back, otherwise the user is left with no whis on PATH at all.
+    try {
+      fs.renameSync(stale, target)
+    } catch {
+      prompts.log.error(`Could not install or restore ${target}. Your previous binary is at ${stale}.`)
+    }
     return false
   }
   // The renamed original is still mapped by the live process, so it usually
@@ -144,8 +156,20 @@ function replaceBinary(source: string, target: string) {
 
 // Delete whis.exe.old / .new leftovers from earlier upgrades. These can only
 // be removed once the process that had them mapped has exited.
-function removeStaleFiles(dir: string, exeName: string) {
+//
+// SAFETY: if the live binary is missing, an .old file is the user's ONLY
+// working copy (an interrupted swap). Restore it instead of deleting it.
+export function removeStaleFiles(dir: string, exeName: string) {
   try {
+    const live = path.join(dir, exeName)
+    if (!fs.existsSync(live)) {
+      const orphan = path.join(dir, exeName + ".old")
+      if (fs.existsSync(orphan)) {
+        fs.renameSync(orphan, live)
+        prompts.log.warn(`Restored ${live} from a previous interrupted upgrade.`)
+        return
+      }
+    }
     for (const suffix of [".old", ".new"]) {
       const leftover = path.join(dir, exeName + suffix)
       if (fs.existsSync(leftover)) fs.rmSync(leftover, { force: true })
