@@ -2,9 +2,10 @@ import type { Argv } from "yargs"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
+import fs from "fs"
+import { execFileSync } from "child_process"
 import path from "path"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { spawnSync } from "child_process"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
@@ -89,7 +90,7 @@ export const UpgradeCommand = {
     // process (and the one on PATH) still points at the old location.
     // Restart so the new binary takes over immediately - no re-open needed.
     try {
-      await restartAfterUpgrade()
+      await restartAfterUpgrade(target)
     } catch {
       // fallback: give the user a message to reopen
       UI.println(UI.logo("  "))
@@ -99,63 +100,127 @@ export const UpgradeCommand = {
   },
 }
 
-// After a successful upgrade, the running whis.exe is still the old binary.
-// The installer just wrote the NEW binary to ~/.whis/bin. Two things must
-// happen so the upgrade sticks:
-//  1. Restart THIS process from the NEW binary (not the stale shadow) so the
-//     running session continues with the new code.
-//  2. Copy the new binary over any stale whis shadow on PATH (e.g. ~/go/bin)
-//     so a fresh terminal resolves `whis` to the new version, not an old one.
-const restartAfterUpgrade = async () => {
-  const home = process.env.HOME || process.env.USERPROFILE || ""
-  const newBin = path.join(home, ".whis", "bin", "whis.exe")
+// Replace `target` with the freshly installed `source`.
+//
+// Windows locks the image file of a RUNNING process, so a plain copy over a
+// live whis.exe fails. Windows does allow RENAMING a running executable, so we
+// move the stale binary aside (freeing the path), write the new one, and leave
+// the old file for the OS to release on exit. This is what makes an upgrade
+// actually stick instead of silently leaving the old binary on PATH.
+function replaceBinary(source: string, target: string) {
+  try {
+    fs.copyFileSync(source, target)
+    return true
+  } catch {}
 
-  // If we're running from .whis/bin, that's already the new location, so
-  // just exit. Otherwise the running whis.exe is the STALE shadow, and the
-  // installer has already swapped ~/.whis/bin/whis.exe to the new build.
-  if (process.execPath.includes(path.join(".whis", "bin"))) {
+  const stale = `${target}.old`
+  try {
+    fs.rmSync(stale, { force: true })
+  } catch {}
+  try {
+    fs.renameSync(target, stale)
+  } catch {
+    // Locked by something we cannot rename (AV, permissions). Stage the new
+    // binary beside it so the next install picks it up.
+    try {
+      fs.copyFileSync(source, `${target}.new`)
+    } catch {}
+    return false
+  }
+
+  try {
+    fs.copyFileSync(source, target)
+  } catch {
+    return false
+  }
+  // The renamed original is still mapped by the live process, so it usually
+  // cannot be deleted yet. Sweep it on the next run instead of relying on a
+  // detached retry loop.
+  try {
+    fs.rmSync(stale, { force: true })
+  } catch {}
+  return true
+}
+
+// Delete whis.exe.old / .new leftovers from earlier upgrades. These can only
+// be removed once the process that had them mapped has exited.
+function removeStaleFiles(dir: string, exeName: string) {
+  try {
+    for (const suffix of [".old", ".new"]) {
+      const leftover = path.join(dir, exeName + suffix)
+      if (fs.existsSync(leftover)) fs.rmSync(leftover, { force: true })
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+// After a successful upgrade, the running whis.exe is still the old binary.
+// The installer wrote the NEW binary to ~/.whis/bin, so two things must happen
+// for the upgrade to stick:
+//  1. Refresh every stale `whis` shadow on PATH (e.g. ~/go/bin) so a new
+//     terminal resolves `whis` to the new binary.
+//  2. Hand the terminal over to the freshly installed binary.
+const restartAfterUpgrade = async (target: string) => {
+  const home = process.env.HOME || process.env.USERPROFILE || ""
+  const binDir = path.join(home, ".whis", "bin")
+  const exeName = process.platform === "win32" ? "whis.exe" : "whis"
+  const newBin = path.join(binDir, exeName)
+
+  // Running from the canonical install dir already - nothing to refresh.
+  if (path.resolve(process.execPath) === path.resolve(newBin)) {
     process.exit(0)
   }
 
-  // 1. Copy the new binary over any stale whis shadow on PATH (e.g. ~/go/bin)
-  //    so a fresh terminal resolves `whis` to the new version, not an old one.
-  if (process.execPath !== newBin) {
-    const { execSync } = await import("child_process")
-    const pathValue = (process.env.PATH || "").split(path.delimiter)
-    for (const dir of pathValue) {
-      const candidate = path.join(dir, "whis.exe")
-      try {
-        if (require("fs").existsSync(candidate)) {
-          // Skip our own running exe and the canonical install dir.
-          if (candidate !== process.execPath && !candidate.includes(path.join(".whis", "bin"))) {
-            require("fs").copyFileSync(newBin, candidate)
-          }
-        }
-      } catch {
-        // ignore
+  // 1. Refresh stale shadows on PATH so `whis` resolves to the new build.
+  removeStaleFiles(binDir, exeName)
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, exeName)
+    try {
+      if (!fs.existsSync(candidate)) continue
+      if (path.resolve(candidate) === path.resolve(newBin)) continue
+      if (path.resolve(candidate) === path.resolve(process.execPath)) {
+        // This is the running binary. On Windows we cannot overwrite it while
+        // it executes, so leave it: install.ps1 already updated this folder via
+        // its own rename-aside step.
+        continue
       }
+      replaceBinary(newBin, candidate)
+    } catch {
+      // ignore individual shadow failures
     }
   }
 
-  // 2. Spin up the fresh binary and drop the old (stale) process so it dies.
-  //    The fresh child inherits this env, so its own `whis` resolves to the
-  //    new ~/.whis/bin/whis.exe and takes over the terminal. We use spawn
-  //    (asynchronous, detached) rather than spawnSync so the fresh process
-  //    keeps running after this one exits.
+  // 2. Verify the canonical install really reports the version we asked for
+  //    before we claim success. A silently-failed swap must never be reported
+  //    as done.
+  try {
+    const reported = execFileSync(newBin, ["--version"], { encoding: "utf8", timeout: 20_000 }).trim()
+    if (!reported) {
+      prompts.log.warn("Could not read the new binary version. Close whis and run `whis --version` to confirm.")
+    } else if (reported.replace(/^v/, "") !== target.replace(/^v/, "")) {
+      prompts.log.warn(
+        `Installed binary reports ${reported} but ${target} was requested. Close whis and re-run the upgrade.`,
+      )
+    } else {
+      prompts.log.info(`Verified: whis --version reports ${reported}`)
+    }
+  } catch {
+    prompts.log.warn("Could not verify the new binary. Close whis and run `whis --version` to confirm.")
+  }
+
+  // 3. Hand the terminal over to the new binary.
   try {
     const { spawn } = await import("child_process")
-    spawn(newBin, [], {
-      stdio: "inherit",
-      detached: true,
-      env: { ...process.env },
-    })
+    spawn(newBin, [], { stdio: "inherit", detached: true, env: { ...process.env } })
   } catch {
-    // best-effort: the user can reopen whis and the new binary is already on PATH
+    // best-effort: the user can reopen whis; the new binary is already in place
   }
   process.exit(0)
 }
 
-function compareSemver(a: string, b: string): number {
+export function compareSemver(a: string, b: string): number {
   const pa = a.replace(/^v/, "").split(".").map(Number)
   const pb = b.replace(/^v/, "").split(".").map(Number)
   for (let i = 0; i < 3; i++) {
