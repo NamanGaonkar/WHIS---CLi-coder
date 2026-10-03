@@ -262,9 +262,17 @@ export const TuiThreadCommand = cmd({
         return
       }
 
+      // Check for a newer release shortly after the TUI comes up.
+      //
+      // Two traps this avoids:
+      //  1. Do NOT unref() the timer. Bun drops unref'd timers once the main
+      //     loop goes idle, so the check never ran at all.
+      //  2. Give the TUI time to register its event handler first. The update
+      //     notice is an EVENT, and the TUI only subscribes once it starts, so
+      //     firing at 1s raced that subscription and the notice went nowhere.
       setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
-      }, 1000).unref?.()
+        client.call("checkUpgrade", { directory: cwd }).catch((error) => console.error("update check failed", error))
+      }, 5000)
 
       try {
         const { Effect } = await import("effect")
@@ -306,4 +314,3 @@ export const TuiThreadCommand = cmd({
     process.exit()
   },
 })
-// scratch
