@@ -213,7 +213,6 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
       },
       Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
     )
-    )
 
     const result: Interface = {
       info: Effect.fn("Installation.info")(function* () {
