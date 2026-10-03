@@ -134,15 +134,10 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
 
     const upgradeFailure = (method: Method, result?: { code: number; stdout: string; stderr: string }) => {
       if (method === "choco") return "not running from an elevated command shell"
-      if (!result) return `Upgrade failed for ${method}.`
-      // Surface the script's own output; without it a failed upgrade is a dead
-      // end because the installer explains nothing on stderr.
-      const detail = [result.stderr, result.stdout]
-        .map((text) => (text ?? "").trim())
-        .filter(Boolean)
-        .join("\n")
-      const head = `Upgrade failed for ${method} (exit code ${result.code}).`
-      return detail ? `${head}\n${detail}` : head
+      // Deliberately do NOT include the command output: it can contain tokens
+      // and other secrets. Keep the message generic.
+      if (result) return `Upgrade failed for ${method} (exit code ${result.code}).`
+      return `Upgrade failed for ${method}.`
     }
 
     const upgradeScriptShell = Effect.fnUntraced(function* () {
@@ -204,9 +199,16 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
           stdout: result.stdout.toString("utf8"),
           stderr: result.stderr.toString("utf8"),
         }
-        // Report the script's own output on failure instead of a bare exit code,
-        // so a broken upgrade is diagnosable rather than a silent no-op.
+        // Report the script's own output on failure instead of a bare exit code.
+        // It goes to the log rather than the error message because command
+        // output can contain secrets, and errors are shown to the user.
         if (output.code !== 0) {
+          yield* Effect.logInfo("upgrade script failed", {
+            target,
+            code: output.code,
+            stdout: output.stdout,
+            stderr: output.stderr,
+          })
           return yield* new UpgradeFailedError({ stderr: upgradeFailure("curl", output) })
         }
         return output
