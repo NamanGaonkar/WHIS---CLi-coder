@@ -5,15 +5,14 @@ $ErrorActionPreference = "Stop"
 $Repo = "NamanGaonkar/WHIS---CLi-coder"
 
 $banner = @"
-  ██╗    ██╗ ██╗  ██╗ ██╗ ███████╗
-  ██║    ██║ ██║  ██║ ██║ ██╔════╝
-  ██║ █╗ ██║ ███████║ ██║ ███████╗
-  ██║███╗██║ ██╔══██║ ██║ ╚════██║
-  ╚███╔███╔╝ ██║  ██║ ██║ ███████║
-   ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝
+  ██╗    ██╗ ██╗  ██╗     ██╗ ███████╗
+  ██║    ██║ ██║  ██║     ██║ ██╔════╝
+  ██║ █╗ ██║ ███████║     ██║ ███████╗
+  ██║███╗██║ ██╔══██║     ██║ ╚════██║
+  ╚███╔███╔╝ ██║  ██║     ██║ ███████║
+   ╚══╝╚══╝  ╚═╝  ╚═╝     ╚═╝ ╚══════╝
 "@
 Write-Host $banner -ForegroundColor DarkYellow
-Write-Host "  Installing WHIS (no edition tagging)" -ForegroundColor Yellow
 Write-Host ""
 
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }

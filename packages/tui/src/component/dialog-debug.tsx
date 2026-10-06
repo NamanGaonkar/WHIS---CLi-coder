@@ -24,7 +24,7 @@ export function DialogDebug() {
   const entries = createMemo(() => {
     const model = local.model.current()
     return [
-      { label: "Version", value: `${InstallationVersion} (${InstallationChannel})` },
+      { label: "WHIS Version", value: `${InstallationVersion} (${InstallationChannel})` },
       { label: "Date", value: new Date().toISOString() },
       { label: "OS", value: describeOS() },
       { label: "Terminal", value: describeTerminal() },

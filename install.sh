@@ -5,15 +5,13 @@ set -e
 
 REPO="NamanGaonkar/WHIS---CLi-coder"
 DEST="${WHIS_INSTALL_DIR:-$HOME/.whis/bin}"
-
 echo ""
-echo "  ██╗    ██╗ ██╗  ██╗ ██╗ ███████╗"
-echo "  ██║    ██║ ██║  ██║ ██║ ██╔════╝"
-echo "  ██║ █╗ ██║ ███████║ ██║ ███████╗"
-echo "  ██║███╗██║ ██╔══██║ ██║ ╚════██║"
-echo "  ╚███╔███╔╝ ██║  ██║ ██║ ███████║"
-echo "   ╚══╝╚══╝  ╚═╝  ╚═╝ ╚═╝ ╚══════╝"
-echo "  Installing WHIS (no edition tagging)"
+echo "  ██╗    ██╗ ██╗  ██╗     ██╗ ███████╗"
+echo "  ██║    ██║ ██║  ██║     ██║ ██╔════╝"
+echo "  ██║ █╗ ██║ ███████║     ██║ ███████╗"
+echo "  ██║███╗██║ ██╔══██║     ██║ ╚════██║"
+echo "  ╚███╔███╔╝ ██║  ██║     ██║ ███████║"
+echo "   ╚══╝╚══╝  ╚═╝  ╚═╝     ╚═╝ ╚══════╝"
 echo ""
 
 # Detect platform
@@ -36,7 +34,7 @@ TARGET="whis-${PLATFORM}-${ARCH}"
 # The executable that started this install (the one the user ran).
 ORIGINAL_WHIS="${WHIS_ORIGINAL_EXE:-}"
 if [ "${VERSION:-latest}" = "latest" ]; then
-  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^\"]*\)".*/\1/p')
   if [ -z "$VERSION" ]; then echo "Failed to resolve latest release"; exit 1; fi
 fi
 echo "  Version: ${VERSION}"

@@ -53,7 +53,7 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
                 ✕
               </text>
             </box>
-            <text fg={theme().textMuted}>WHIS is strict BYOK - connect your own provider API keys.</text>
+            <text fg={theme().textMuted}>WHIS is strict BYOK — connect your own provider API keys.</text>
             <text fg={theme().textMuted}>
               DeepSeek, OpenRouter, Anthropic, OpenAI, Gemini, Groq, xAI and more - direct endpoints
             </text>
@@ -67,8 +67,7 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
       <text>
         <span style={{ fg: theme().textMuted }}>{path().parent}/</span>
         <span style={{ fg: theme().text }}>{path().name}</span>
-      </text>
-      <text fg={theme().textMuted}>
+      </text>        <text fg={theme().textMuted}>
         <span style={{ fg: theme().success }}>•</span> <b>WHIS</b>{" "}
         <span>{props.api.app.version}</span>
       </text>

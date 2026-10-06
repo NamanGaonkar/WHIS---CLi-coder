@@ -106,9 +106,8 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
     >
       <box width={contentWidth()} flexGrow={1} flexDirection="column" paddingTop={1} paddingBottom={1} gap={1}>
         {/* Headline */}
-        <box flexDirection="column" alignItems="center" flexShrink={0}>
-          <text attributes={TextAttributes.BOLD} fg={colors.text}>
-            whis crashed
+        <box flexDirection="column" alignItems="center" flexShrink={0}>            <text attributes={TextAttributes.BOLD} fg={colors.text}>
+            WHIS crashed
           </text>
           <Show when={showSubtext()}>
             <text fg={colors.muted}>An unexpected error stopped the session.</text>
@@ -192,7 +191,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
                 ? "Report copied — paste it into a new GitHub issue."
                 : "Copy the report and open a GitHub issue to help us fix this."}
             </text>
-            <text fg={colors.muted}>whis {InstallationVersion}</text>
+            <text fg={colors.muted}>WHIS {InstallationVersion}</text>
           </box>
         </Show>
       </box>
