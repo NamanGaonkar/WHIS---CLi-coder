@@ -162,15 +162,44 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
         const response = yield* httpOk.execute(HttpClientRequest.get(scriptUrl))
         const body = yield* response.text
 
-        const scriptDir = yield* appProcess.run(ChildProcess.make("cmd", ["/c", "echo", "%TEMP%"])).pipe(
-          Effect.map((r) => r.stdout.toString("utf8").trim()),
-          Effect.catch(() => Effect.succeed(os.tmpdir())),
+        // Resolve %TEMP% defensively: some machines print extra output before
+        // the echo result (cmd AutoRun banners, fastfetch on shell startup, etc),
+        // and joining a multi-line blob produced an ENOENT garbage path. Take
+        // the last non-empty line, trust it only if it is an existing absolute
+        // directory, otherwise fall back to Node's os.tmpdir() (which reads
+        // %TEMP% on Windows anyway).
+        const tempOutput = yield* appProcess.run(ChildProcess.make("cmd", ["/c", "echo", "%TEMP%"])).pipe(
+          Effect.map((r) => r.stdout.toString("utf8")),
+          Effect.catch(() => Effect.succeed("")),
         )
+        const tempCandidate = tempOutput
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .pop()
+        const tempCandidateOk = yield* Effect.promise(() =>
+          tempCandidate && path.isAbsolute(tempCandidate)
+            ? fs.stat(tempCandidate).then((stat) => stat.isDirectory()).catch(() => false)
+            : Promise.resolve(false),
+        )
+        const scriptDir = tempCandidateOk && tempCandidate ? tempCandidate : os.tmpdir()
         const scriptPath = path.join(
           scriptDir || os.tmpdir(),
           `whis-upgrade-${process.pid}-${Date.now()}.${isWindows ? "ps1" : "sh"}`,
         )
-        yield* Effect.promise(() => fs.writeFile(scriptPath, body, "utf8"))
+        // Effect.promise rejections are defects in Effect 4 and would escape
+        // the mapError below, dumping the raw path at the user. Swallow inside
+        // the callback and surface a typed, generic failure instead.
+        const writeError = yield* Effect.promise(() =>
+          fs.writeFile(scriptPath, body, "utf8").then(
+            () => "",
+            (err: unknown) => (err instanceof Error ? err.message : String(err)),
+          ),
+        )
+        if (writeError) {
+          yield* Effect.logInfo("upgrade script write failed", { scriptPath, error: writeError })
+          return yield* new UpgradeFailedError({ stderr: upgradeFailure("curl") })
+        }
 
         const runScript = Effect.gen(function* () {
           if (isWindows) {
