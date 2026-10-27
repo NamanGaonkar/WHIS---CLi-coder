@@ -57,24 +57,47 @@ export function isDefaultTitle(title: string) {
 type SessionRow = typeof SessionTable.$inferSelect
 
 export function fromRow(row: SessionRow): Info {
+  const parseJson = (val: unknown) => {
+    if (typeof val === "string") {
+      try { return JSON.parse(val) } catch { return undefined }
+    }
+    return val
+  }
+
+  const rawDiffs = parseJson(row.summary_diffs)
   const summary =
     row.summary_additions !== null || row.summary_deletions !== null || row.summary_files !== null
       ? {
           additions: row.summary_additions ?? 0,
           deletions: row.summary_deletions ?? 0,
           files: row.summary_files ?? 0,
-          diffs: row.summary_diffs ?? undefined,
+          diffs: Array.isArray(rawDiffs) ? rawDiffs : undefined,
         }
       : undefined
   const share = row.share_url ? { url: row.share_url } : undefined
-  const revert = row.revert
+  const rawRevert = parseJson(row.revert) as any
+  const revert = rawRevert && rawRevert.messageID
     ? {
-        messageID: MessageID.make(row.revert.messageID),
-        partID: row.revert.partID ? PartID.make(row.revert.partID) : undefined,
-        snapshot: row.revert.snapshot,
-        diff: row.revert.diff,
+        messageID: MessageID.make(String(rawRevert.messageID)),
+        partID: rawRevert.partID ? PartID.make(String(rawRevert.partID)) : undefined,
+        snapshot: rawRevert.snapshot,
+        diff: rawRevert.diff,
       }
     : undefined
+
+  const rawModel = parseJson(row.model) as any
+  const model = rawModel && rawModel.id && rawModel.providerID
+    ? {
+        id: ModelV2.ID.make(String(rawModel.id)),
+        providerID: ProviderV2.ID.make(String(rawModel.providerID)),
+        variant: rawModel.variant ? String(rawModel.variant) : undefined,
+      }
+    : undefined
+
+  const rawMetadata = parseJson(row.metadata)
+  const rawPerm = parseJson(row.permission)
+  const permission = Array.isArray(rawPerm) ? [...rawPerm] : undefined
+
   return {
     id: row.id,
     slug: row.slug,
@@ -85,13 +108,7 @@ export function fromRow(row: SessionRow): Info {
     parentID: row.parent_id ?? undefined,
     title: row.title,
     agent: row.agent ?? undefined,
-    model: row.model
-      ? {
-          id: ModelV2.ID.make(row.model.id),
-          providerID: ProviderV2.ID.make(row.model.providerID),
-          variant: row.model.variant,
-        }
-      : undefined,
+    model,
     version: row.version,
     summary,
     cost: row.cost,
@@ -105,9 +122,9 @@ export function fromRow(row: SessionRow): Info {
       },
     },
     share,
-    metadata: row.metadata ?? undefined,
+    metadata: typeof rawMetadata === "object" && rawMetadata !== null ? rawMetadata : undefined,
     revert,
-    permission: row.permission ? [...row.permission] : undefined,
+    permission,
     time: {
       created: row.time_created,
       updated: row.time_updated,
@@ -543,15 +560,6 @@ const layer: Layer.Layer<
       return fromRow(row)
     })
 
-    const list = Effect.fn("Session.list")(function* (input?: ListInput) {
-      const ctx = yield* InstanceState.context
-      return yield* listByProject(db, {
-        projectID: ctx.project.id,
-        experimentalWorkspaces: flags.experimentalWorkspaces,
-        ...input,
-      })
-    })
-
     const listGlobal = Effect.fn("Session.listGlobal")(function* (input?: GlobalListInput) {
       const conditions: SQL[] = []
       if (input?.directory) conditions.push(eq(SessionTable.directory, input.directory))
@@ -591,6 +599,35 @@ const layer: Layer.Layer<
         }
       }
       return rows.map((row) => ({ ...fromRow(row), project: projects.get(row.project_id) ?? null }))
+    })
+
+    const list = Effect.fn("Session.list")(function* (input?: ListInput) {
+      const ctx = yield* InstanceState.context
+      const projectSessions = yield* listByProject(db, {
+        projectID: ctx.project.id,
+        experimentalWorkspaces: flags.experimentalWorkspaces,
+        ...input,
+      })
+      if (input?.scope === "project") return projectSessions
+
+      const globalSessions = yield* listGlobal({
+        roots: input?.roots,
+        start: input?.start,
+        search: input?.search,
+        limit: input?.limit,
+      })
+      const map = new Map<string, Info>()
+      for (const s of projectSessions) {
+        map.set(s.id, s)
+      }
+      for (const s of globalSessions) {
+        if (!map.has(s.id)) {
+          map.set(s.id, s)
+        }
+      }
+      return [...map.values()]
+        .sort((a, b) => (b.time.updated ?? 0) - (a.time.updated ?? 0))
+        .slice(0, input?.limit ?? 100)
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {

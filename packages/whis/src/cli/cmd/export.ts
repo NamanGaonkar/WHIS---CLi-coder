@@ -6,7 +6,7 @@ import { effectCmd, fail } from "../effect-cmd"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { EOL } from "os"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 
 function redact(kind: string, id: string, value: string) {
   return value.trim() ? `[redacted:${kind}:${id}]` : value
@@ -239,7 +239,8 @@ export const ExportCommand = effectCmd({
 
 const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; sanitize?: boolean }) {
   const svc = yield* Session.Service
-  let sessionID = args.sessionID ? SessionID.make(args.sessionID) : undefined
+  const rawId = args.sessionID || (args as any)["session-i-d"] || (args as any).sessionId || (args as any)._?.[1];
+  let sessionID = rawId ? SessionID.make(String(rawId)) : undefined
   process.stderr.write(`Exporting session: ${sessionID ?? "latest"}\n`)
 
   if (!sessionID) {

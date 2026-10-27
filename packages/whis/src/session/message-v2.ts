@@ -26,7 +26,7 @@ import { desc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
-import { or } from "drizzle-orm"
+import { or, sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -426,12 +426,122 @@ export function toModelMessages(
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }
 
+function reconcileFromSessionMessage(db: any, sessionID: string) {
+  return Effect.gen(function* () {
+    const missing = yield* db.all(sql`
+      SELECT id, session_id, type, seq, time_created, time_updated, data
+      FROM session_message
+      WHERE session_id = ${sessionID}
+        AND (type = 'user' OR type = 'assistant')
+        AND id NOT IN (SELECT id FROM message WHERE session_id = ${sessionID})
+      ORDER BY seq ASC
+    `).pipe(Effect.orDie, Effect.catch(() => Effect.succeed([])))
+
+    if (!missing || !Array.isArray(missing) || missing.length === 0) return
+
+    for (const row of missing as any[]) {
+      let parsedData: any = {}
+      try {
+        parsedData = typeof row.data === "string" ? JSON.parse(row.data) : row.data
+      } catch {
+        parsedData = {}
+      }
+
+      if (row.type === "user") {
+        const text = parsedData.text || ""
+        const msgData = {
+          role: "user",
+          time: { created: row.time_created },
+          agent: parsedData.agent || "build",
+          model: parsedData.model || { providerID: "ollama-cloud", modelID: "whis-default" },
+          summary: { diffs: [] },
+        }
+        yield* db.run(sql`
+          INSERT INTO message (id, session_id, time_created, time_updated, data)
+          VALUES (${row.id}, ${sessionID}, ${row.time_created}, ${row.time_updated}, ${JSON.stringify(msgData)})
+          ON CONFLICT(id) DO NOTHING
+        `).pipe(Effect.orDie, Effect.catch(() => Effect.void))
+
+        const partId = `prt_${row.id.replace(/^msg_/, "")}`
+        const partData = {
+          type: "text",
+          text,
+        }
+        yield* db.run(sql`
+          INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+          VALUES (${partId}, ${row.id}, ${sessionID}, ${row.time_created}, ${row.time_updated}, ${JSON.stringify(partData)})
+          ON CONFLICT(id) DO NOTHING
+        `).pipe(Effect.orDie, Effect.catch(() => Effect.void))
+      } else if (row.type === "assistant") {
+        const msgData = {
+          role: "assistant",
+          time: {
+            created: row.time_created,
+            completed: parsedData.time?.completed || row.time_updated,
+          },
+          agent: parsedData.agent || "build",
+          model: {
+            providerID: parsedData.model?.providerID || "ollama-cloud",
+            modelID: parsedData.model?.id || "whis-default",
+          },
+          finish: parsedData.finish || "stop",
+          cost: parsedData.cost ?? 0,
+          tokens: parsedData.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        }
+        yield* db.run(sql`
+          INSERT INTO message (id, session_id, time_created, time_updated, data)
+          VALUES (${row.id}, ${sessionID}, ${row.time_created}, ${row.time_updated}, ${JSON.stringify(msgData)})
+          ON CONFLICT(id) DO NOTHING
+        `).pipe(Effect.orDie, Effect.catch(() => Effect.void))
+
+        const contents = Array.isArray(parsedData.content) ? parsedData.content : []
+        let partIdx = 0
+        for (const item of contents) {
+          const partId = `prt_${row.id.replace(/^msg_/, "")}_${partIdx++}`
+          let pData: any = null
+          if (item.type === "text") {
+            pData = { type: "text", text: item.text || "" }
+          } else if (item.type === "reasoning") {
+            pData = {
+              type: "reasoning",
+              text: item.text || "",
+              time: {
+                start: item.time?.created || row.time_created,
+                end: item.time?.completed,
+              },
+            }
+          } else if (item.type === "tool") {
+            pData = {
+              type: "tool",
+              callID: item.id || partId,
+              tool: item.name || "unknown",
+              state: item.state || { status: "completed", input: {}, output: "" },
+              time: {
+                start: item.time?.created || row.time_created,
+                end: item.time?.completed,
+              },
+            }
+          }
+          if (pData) {
+            yield* db.run(sql`
+              INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+              VALUES (${partId}, ${row.id}, ${sessionID}, ${row.time_created}, ${row.time_updated}, ${JSON.stringify(pData)})
+              ON CONFLICT(id) DO NOTHING
+            `).pipe(Effect.orDie, Effect.catch(() => Effect.void))
+          }
+        }
+      }
+    }
+  })
+}
+
 export const page = Effect.fn("MessageV2.page")(function* (input: {
   sessionID: SessionID
   limit: number
   before?: string
 }) {
   const { db } = yield* Database.Service
+  yield* reconcileFromSessionMessage(db, input.sessionID).pipe(Effect.catch(() => Effect.void))
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
