@@ -4,6 +4,11 @@ import type { Config } from "@/config/config"
 import { Effect } from "effect"
 
 const options = {
+  service: {
+    type: "boolean" as const,
+    describe: "run as background service",
+    default: false,
+  },
   port: {
     type: "number" as const,
     describe: "port to listen on",
