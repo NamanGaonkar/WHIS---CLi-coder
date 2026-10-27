@@ -1,4 +1,15 @@
+<p align="center">
+  <img src="logo.jpg" alt="Whis Logo" width="160" height="160" style="border-radius: 20px;">
+</p>
+
 # WHIS
+
+<p align="center">
+  <a href="https://github.com/NamanGaonkar/WHIS---CLi-coder/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-0.2.60-amber?style=flat-square" /></a>
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-orange?style=flat-square" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" />
+  <a href="https://github.com/NamanGaonkar/whis-desktop"><img alt="Whis Desktop" src="https://img.shields.io/badge/companion-Whis%20Desktop%20v4.1.8-orange?style=flat-square" /></a>
+</p>
 
 ```
 ██╗    ██╗ ██╗  ██╗ ██╗ ███████╗
@@ -14,6 +25,14 @@
 WHIS lives in your terminal, reads and edits your code, runs commands, and gets things done
 with token-surgical precision. Strictly BYOK: your keys, your providers, direct connections.
 No hosted gateway, no middleman, ever.
+
+---
+
+## Unified Workspace: CLI + Desktop
+
+> **Unified Chat & Session Continuity:** Whis CLI is natively integrated with [**Whis Desktop**](https://github.com/NamanGaonkar/whis-desktop). Both share the same local database (`~/.local/share/whis/opencode.db`) and state directory. Any chat or coding session started in the terminal CLI immediately appears in Whis Desktop, and any session created in Desktop can be continued in the terminal seamlessly. All BYOK credentials, project history, and context are shared automatically.
+
+---
 
 ## Install
 
