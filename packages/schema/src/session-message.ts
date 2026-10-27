@@ -197,6 +197,14 @@ export const Compaction = Schema.Struct({
   ...Base,
 }).annotate({ identifier: "Session.Message.Compaction" })
 
+export interface Idle extends Schema.Schema.Type<typeof Idle> {}
+export const Idle = Schema.Struct({
+  ...Base,
+  type: Schema.Literal("idle"),
+  outcome: Schema.Literals(["succeeded", "failed", "interrupted"]),
+  error: UnknownError.pipe(optional),
+}).annotate({ identifier: "Session.Message.Idle" })
+
 export const Message = Schema.Union([
   AgentSwitched,
   ModelSwitched,
@@ -206,8 +214,18 @@ export const Message = Schema.Union([
   Shell,
   Assistant,
   Compaction,
+  Idle,
 ])
   .pipe(Schema.toTaggedUnion("type"))
   .annotate({ identifier: "Session.Message" })
-export type Message = AgentSwitched | ModelSwitched | User | Synthetic | System | Shell | Assistant | Compaction
+export type Message =
+  | AgentSwitched
+  | ModelSwitched
+  | User
+  | Synthetic
+  | System
+  | Shell
+  | Assistant
+  | Compaction
+  | Idle
 export type Type = Message["type"]

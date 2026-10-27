@@ -33,6 +33,7 @@ const messageRows = Effect.fnUntraced(function* (
     .where(
       and(
         eq(SessionMessageTable.session_id, sessionID),
+        ne(SessionMessageTable.type, "idle"),
         compaction
           ? or(
               gte(SessionMessageTable.seq, compaction.seq),

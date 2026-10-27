@@ -163,6 +163,8 @@ ${message.recent}
           metadata: message.metadata,
         }),
       ]
+    case "idle":
+      return []
   }
 }
 
